@@ -1,0 +1,2714 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CONTROL PRO — Gestão Semanal por Ciclos & Desempenho</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;600;700;800&display=swap" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #080b0f; color: #c8d8e8; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  #root { min-height: 100vh; }
+  input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0d1117; }
+  ::-webkit-scrollbar-thumb { background: #263040; border-radius: 4px; }
+  @keyframes spin { 100% { transform: rotate(360deg); } }
+</style>
+
+<!-- React + ReactDOM (UMD) -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<!-- Babel standalone -->
+<script crossorigin src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<!-- PDF.js (extração da página do mapa como imagem) -->
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- ExcelJS (exportação de .xlsx com cores/formatação, tipo a planilha do Google Sheets) -->
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<!-- html2canvas (gerar imagem/print da seção de Status para compartilhar no WhatsApp) -->
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- Supabase JS (sincronização em nuvem em tempo real entre os funcionários) -->
+<script crossorigin src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script>
+  window.addEventListener('load', function () {
+    if (window['pdfjsLib']) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  });
+</script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// ===== SUPABASE (sincronização em nuvem entre todos os funcionários) =====
+const SUPABASE_URL = 'https://xsgudmgnvifzwqbmilgz.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhzZ3VkbWdudmlmendxYm1pbGd6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4NjczMzcsImV4cCI6MjA5MzQ0MzMzN30.BH0FGqvvpI6zxse1TfELlI8-Rep483vk8ff9Tmt5r_k';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Tabela única no Supabase (app_state) guarda um "JSON por chave", igual ao localStorage,
+// só que compartilhado entre todo mundo e com Realtime (edição de um aparece pros outros na hora).
+// Ver o script SQL fornecido separadamente para criar essa tabela.
+const APP_STATE_TABLE = 'app_state';
+
+// Hook genérico: sincroniza um pedaço de estado do React com uma linha da tabela app_state.
+// - key: identificador da linha (ex: 'projects', 'production_list')
+// - deps: array de dependências que, quando mudar, dispara o salvamento (debounced) na nuvem
+// - getValue: função que retorna o valor atual (serializável em JSON) a ser salvo
+// - applyRemote: função chamada quando chega uma atualização de outro funcionário (via Realtime) ou no carregamento inicial
+function useCloudSync(key, deps, getValue, applyRemote) {
+  const isApplyingRemote = React.useRef(false);
+  const saveTimer = React.useRef(null);
+  const didInit = React.useRef(false);
+
+  // Carrega o valor mais recente da nuvem e assina mudanças em tempo real
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const { data, error } = await sb.from(APP_STATE_TABLE).select('value').eq('key', key).maybeSingle();
+        if (!active) return;
+        if (error) throw error;
+        if (data && data.value !== undefined && data.value !== null) {
+          isApplyingRemote.current = true;
+          applyRemote(data.value);
+        } else {
+          // Ainda não existe registro para essa chave: sobe o valor local atual como semente inicial
+          await sb.from(APP_STATE_TABLE).upsert({ key, value: getValue(), updated_at: new Date().toISOString() });
+        }
+        didInit.current = true;
+      } catch (e) {
+        console.error(`[Supabase] Falha ao carregar "${key}" — usando dado local por enquanto.`, e);
+        didInit.current = true;
+      }
+    })();
+
+    const channel = sb
+      .channel('sync_' + key)
+      .on('postgres_changes', { event: '*', schema: 'public', table: APP_STATE_TABLE, filter: `key=eq.${key}` }, (payload) => {
+        if (payload.new && payload.new.value !== undefined) {
+          isApplyingRemote.current = true;
+          applyRemote(payload.new.value);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      active = false;
+      sb.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  // Salva na nuvem (com debounce) sempre que o valor local mudar por uma edição real (não por update remoto)
+  useEffect(() => {
+    if (!didInit.current) return; // evita sobrescrever a nuvem antes do primeiro carregamento
+    if (isApplyingRemote.current) { isApplyingRemote.current = false; return; }
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      sb.from(APP_STATE_TABLE).upsert({ key, value: getValue(), updated_at: new Date().toISOString() })
+        .then(({ error }) => { if (error) console.error(`[Supabase] Falha ao salvar "${key}"`, error); });
+    }, 500);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
+
+// ===== TELA DE SENHA COMPARTILHADA DA EQUIPE =====
+const TEAM_PASSWORD = '010203'; // <- 
+const AUTH_STORAGE_KEY = 'CONTROL_PRO_AUTH_OK_V1';
+
+function PasswordGate({ children }) {
+  const [unlocked, setUnlocked] = useState(() => localStorage.getItem(AUTH_STORAGE_KEY) === 'true');
+  const [input, setInput] = useState('');
+  const [error, setError] = useState('');
+
+  if (unlocked) return children;
+
+  const tryUnlock = (e) => {
+    e.preventDefault();
+    if (input === TEAM_PASSWORD) {
+      localStorage.setItem(AUTH_STORAGE_KEY, 'true');
+      setUnlocked(true);
+    } else {
+      setError('Senha incorreta.');
+    }
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#080b0f' }}>
+      <form onSubmit={tryUnlock} style={{ background: '#0d1117', border: '1px solid #1e2832', borderRadius: 8, padding: 32, width: 320, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 20, fontWeight: 800, color: '#00d4ff', textAlign: 'center' }}>
+          CONTROL<span style={{ color: '#c8d8e8' }}>PRO</span>
+        </div>
+        <div style={{ fontSize: 11, color: '#4a6070', textAlign: 'center', marginBottom: 6 }}>Acesso da Equipe — Área Restrita</div>
+        <input
+          type="password"
+          autoFocus
+          value={input}
+          onChange={(e) => { setInput(e.target.value); setError(''); }}
+          placeholder="Senha da equipe"
+          style={{ background: '#131920', color: '#c8d8e8', border: '1px solid #263040', borderRadius: 5, padding: '10px 12px', fontSize: 13, outline: 'none', fontFamily: "'JetBrains Mono', monospace" }}
+        />
+        {error && <div style={{ color: '#ff5252', fontSize: 11 }}>{error}</div>}
+        <button type="submit" style={{ background: '#00d4ff', color: '#000', border: 'none', borderRadius: 5, padding: '10px 12px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Entrar</button>
+      </form>
+    </div>
+  );
+}
+
+const STORAGE_KEY = 'CONTROL_PRO_PROJECTS_DATA_V1';
+
+// Dados Iniciais padrão para caso o sistema seja aberto pela primeira vez
+const INITIAL_DEFAULT_DATA = [
+  {
+    id: 'item-1',
+    map: 'MAPA-001',
+    cycle: 'SEMANA_1',
+    asbuiltStatus: 'OK',
+    asbuiltDate: new Date().toISOString().slice(0, 10),
+    asbuiltTech: 'ERVIN',
+    invoiceStatus: 'SIM',
+    invoiceDate: new Date().toISOString().slice(0, 10),
+    invoiceTech: 'STEVECOMMS',
+    workbookStatus: 'SIM',
+    workbookDate: new Date().toISOString().slice(0, 10),
+    workbookTech: 'STEVECOMMS',
+    otCount: 0,
+    status: 'OK',
+    deliveryDay: 'QUINTA',
+    note: 'Exemplo de mapa concluído'
+  },
+  {
+    id: 'item-2',
+    map: 'MAPA-002',
+    cycle: 'SEMANA_1',
+    asbuiltStatus: 'PENDENTE',
+    asbuiltDate: '',
+    asbuiltTech: '',
+    invoiceStatus: 'PENDENTE',
+    invoiceDate: '',
+    invoiceTech: '',
+    workbookStatus: 'PENDENTE',
+    workbookDate: '',
+    workbookTech: '',
+    otCount: 5,
+    status: 'NO_UPDATE',
+    deliveryDay: 'SEXTA',
+    note: 'Aguardando validação'
+  }
+];
+
+// Ciclo Operacional: Sábado a Sexta
+const CYCLE_DAYS = ['Sáb', 'Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex'];
+
+// Semanas do ciclo de produção (substitui o antigo "Semana Atual / Semana Anterior").
+// Apenas UMA fica "aberta" por vez (definida pelo supervisor); as demais ficam "fechadas" (histórico).
+const WEEK_OPTIONS = [
+  { id: 'SEMANA_1', label: 'Semana 1' },
+  { id: 'SEMANA_2', label: 'Semana 2' },
+  { id: 'SEMANA_3', label: 'Semana 3' },
+  { id: 'SEMANA_4', label: 'Semana 4' }
+];
+const STORAGE_KEY_OPEN_WEEK = 'CONTROL_PRO_OPEN_WEEK_V1';
+const STORAGE_KEY_ARCHIVE = 'CONTROL_PRO_MONTH_ARCHIVE_V1';
+
+// ===== ABA PRODUÇÃO & CÓDIGOS AS-BUILT =====
+const STORAGE_KEY_PRODUCTION = 'CONTROL_PRO_PRODUCTION_V1';
+
+// Códigos Padrão de As-Built
+const CODE_FIELDS = [
+  { id: 'US01', label: 'US01' },
+  { id: 'FS01', label: 'FS01' },
+  { id: 'FS02', label: 'FS02' },
+  { id: 'FS03', label: 'FS03' },
+  { id: 'FS07A', label: 'FS07A' },
+  { id: 'FS08', label: 'FS08' },
+  { id: 'FS16', label: 'FS16' },
+  { id: 'FS04', label: 'FS04' },
+  { id: 'MC01', label: 'MC01' }
+];
+
+// Dados Iniciais da Produção
+const INITIAL_PRODUCTION = [
+  {
+    id: 'prod-1',
+    daily: '',
+    pendings: 'NO HUNG',
+    date: new Date().toISOString().slice(0, 10),
+    map: 'GT057E',
+    location: 'SE 025',
+    splice: '48',
+    name: 'ROBSON',
+    type: 'AERIAL',
+    typeEnd: 'END',
+    codes: { US01: '', FS01: '', FS02: 48, FS03: '', FS07A: '', FS08: '', FS16: 1, FS04: '', MC01: '' }
+  },
+  {
+    id: 'prod-2',
+    daily: '',
+    pendings: 'NO HUNG',
+    date: new Date().toISOString().slice(0, 10),
+    map: 'GT057E',
+    location: 'FT 068',
+    splice: '5',
+    name: 'ROBSON',
+    type: 'AERIAL',
+    typeEnd: 'END',
+    codes: { US01: 0, FS01: 5, FS02: '', FS03: '', FS07A: '', FS08: '', FS16: 1, FS04: '', MC01: '' }
+  }
+];
+
+function computeAsbuiltFormat(codes = {}) {
+  const parts = [];
+  CODE_FIELDS.forEach(field => {
+    const qty = codes[field.id];
+    if (qty && Number(qty) > 0) {
+      parts.push(`${field.id}X${qty}`);
+    }
+  });
+  return parts.join(' ');
+}
+
+function Icon({ size = 14, color = "currentColor", children, style, onClick }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, ...style }} onClick={onClick}>
+      {children}
+    </svg>
+  );
+}
+const Plus = (p) => <Icon {...p}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Icon>;
+const X = (p) => <Icon {...p}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Icon>;
+const Search = (p) => <Icon {...p}><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></Icon>;
+const Edit2 = (p) => <Icon {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></Icon>;
+const Trash2 = (p) => <Icon {...p}><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Icon>;
+const CheckCircle = (p) => <Icon {...p}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></Icon>;
+const FileSpreadsheet = (p) => <Icon {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="16" y2="17" /></Icon>;
+const AlertTriangle = (p) => <Icon {...p}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></Icon>;
+const Calendar = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></Icon>;
+const TrendingUp = (p) => <Icon {...p}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></Icon>;
+const Users = (p) => <Icon {...p}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></Icon>;
+const Clock = (p) => <Icon {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></Icon>;
+const List = (p) => <Icon {...p}><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></Icon>;
+const Download = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></Icon>;
+const UploadIcon = (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></Icon>;
+const Wand2 = (p) => <Icon {...p}><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M15 9h0M17.8 6.2L19 5M3 21l9-9M12.2 6.2L11 5" /></Icon>;
+const Crosshair = (p) => <Icon {...p}><circle cx="12" cy="12" r="10" /><line x1="22" y1="12" x2="18" y2="12" /><line x1="6" y1="12" x2="2" y2="12" /><line x1="12" y1="6" x2="12" y2="2" /><line x1="12" y1="22" x2="12" y2="18" /></Icon>;
+const ZoomIn = (p) => <Icon {...p}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" /></Icon>;
+const ZoomOut = (p) => <Icon {...p}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /></Icon>;
+const Copy = (p) => <Icon {...p}><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></Icon>;
+const ChevronDown = (p) => <Icon {...p}><polyline points="6 9 12 15 18 9" /></Icon>;
+const ChevronUp = (p) => <Icon {...p}><polyline points="18 15 12 9 6 15" /></Icon>;
+const Archive = (p) => <Icon {...p}><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></Icon>;
+const RotateCcw = (p) => <Icon {...p}><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></Icon>;
+
+const C = {
+  bg: "#080b0f",
+  panel: "#0d1117",
+  panel2: "#131920",
+  border: "#1e2832",
+  borderSoft: "#182029",
+  border2: "#263040",
+  text: "#c8d8e8",
+  textDim: "#4a6070",
+  textFaint: "#2a3a48",
+  accent: "#00d4ff",
+  accentSoft: "rgba(0, 212, 255, 0.1)",
+  green: "#00e676",
+  greenSoft: "rgba(0,230,118,0.12)",
+  red: "#ff5252",
+  redSoft: "rgba(255,82,82,0.12)",
+  amber: "#ffd600",
+  amberSoft: "rgba(255,214,0,0.12)",
+  purple: "#b388ff",
+  pink: "#ff6fae",
+  pinkSoft: "rgba(255,111,174,0.12)",
+};
+
+const FONT_HEAD = "'Syne', sans-serif";
+
+function getCycleDayIndex(dateStr) {
+  if (!dateStr) return -1;
+  const date = new Date(dateStr);
+  let day = date.getDay();
+  if (day === 6) return 0;
+  return day + 1;
+}
+
+function Panel({ children, style, title, icon, right }) {
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: 16, display: "flex", flexDirection: "column", gap: 12, ...style }}>
+      {(title || right) && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 10, fontWeight: 700, color: C.textDim, textTransform: "uppercase", letterSpacing: 1.2 }}>
+            {icon}{title}
+          </div>
+          {right}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function StatRow({ label, value, valueColor, sub }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+      <span style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: 0.6 }}>{label}</span>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: valueColor || C.text, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+        {sub && <div style={{ fontSize: 10, color: C.textFaint }}>{sub}</div>}
+      </div>
+    </div>
+  );
+}
+
+function Input(props) {
+  return (
+    <input {...props} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px 10px", fontSize: 11, outline: "none", fontFamily: "'JetBrains Mono', monospace", width: "100%", boxSizing: "border-box", ...(props.style || {}) }} />
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <label style={{ fontSize: 9.5, color: C.textDim, textTransform: "uppercase", letterSpacing: 0.8 }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function WeeklyActivityHeatmap({ asbuiltDate, workbookDate, invoiceDate }) {
+    const abDayIdx = getCycleDayIndex(asbuiltDate);
+    const wbDayIdx = getCycleDayIndex(workbookDate);
+    const invDayIdx = getCycleDayIndex(invoiceDate);
+
+    const renderRow = (title, updatedDayIdx, color) => (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+            <span style={{ fontSize: 9, color: C.textDim, width: 24, textAlign: 'right', fontWeight: 600 }}>{title}</span>
+            <div style={{ display: 'flex', gap: 2 }}>
+                {CYCLE_DAYS.map((day, index) => {
+                    let bgColor = C.panel2;
+                    let border = `1px solid ${C.border2}`;
+
+                    if (index === updatedDayIdx) {
+                        bgColor = color;
+                        border = `1px solid ${color}`;
+                    }
+
+                    return (
+                        <div key={day} title={`${title}: ${day}${index === updatedDayIdx ? ' (Atualizado)' : ''}`} style={{ width: 10, height: 10, background: bgColor, border: border, borderRadius: 2 }} />
+                    );
+                })}
+            </div>
+        </div>
+    );
+
+    return (
+        <div style={{ background: C.panel2, padding: '4px 6px', borderRadius: 4, border: `1px solid ${C.borderSoft}` }}>
+            {renderRow('AB', abDayIdx, C.accent)}
+            {renderRow('WB', wbDayIdx, C.purple)}
+            {renderRow('INV', invDayIdx, C.green)}
+        </div>
+    );
+}
+
+function StageBadge({ status, tech, date }) {
+  if (status === "OK" || status === "SIM") {
+    return (
+      <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>ATUALIZADO</span>
+        {tech && (
+          <div style={{ fontSize: 9, color: C.accent, fontWeight: 600 }}>
+            Por: <span style={{ color: C.text }}>{tech}</span>
+            {date && <span style={{ color: C.textDim, display: "block", fontSize: 8.5 }}>Em: {date}</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (status === "FAZENDO") {
+    return (
+      <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ background: "rgba(255,171,0,0.15)", color: C.amber, border: `1px solid ${C.amber}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>FAZENDO</span>
+        {tech && (
+          <div style={{ fontSize: 9, color: C.amber, fontWeight: 600 }}>
+            Por: <span style={{ color: C.text }}>{tech}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+  return <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>PENDENTE</span>;
+}
+
+// ===== ABA AUTOMAÇÃO — DETECÇÃO DE TAGS NO MAPA POR IA =====
+const STORAGE_KEY_AUTOM = 'CONTROL_PRO_AUTOM_V1';
+const PALETTE_AUTOM = ['#00d4ff', '#00e676', '#ffd600', '#ff5252', '#b388ff', '#ff9100', '#64ffda', '#ff4081', '#76ff03', '#40c4ff'];
+
+function getPrefix(tag) {
+  const m = (tag || '').match(/^[A-Za-zÀ-ÿ]+/);
+  return m ? m[0].toUpperCase() : (tag || '?').toUpperCase();
+}
+
+const STORAGE_KEY_APIKEY = 'CONTROL_PRO_API_KEY_V1';
+
+// ===== ABA CALCULADORA DE FIBRA =====
+const STORAGE_KEY_FIBER_CALC = 'CONTROL_PRO_FIBER_CALC_V1';
+
+// ===== CALCULADORA DE FIBRA (RISCANDO) =====
+function newFiberRow() {
+  return { id: 'row-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), text: '', qty: '', autoQty: true };
+}
+
+// Lê a primeira ocorrência de "#<inicio>-<fim>" (faixa) ou "#<numero>" (fibra única) no texto da linha
+// e devolve a quantidade de fibras correspondente. Ex: "SPLT1x32#1-9 TO FT031#3-11" -> 9 (1..9)
+// "SE010 IN#9 TO FT011#1" -> 1 (referência única, não é faixa)
+function parseFiberCount(text) {
+  if (!text) return 0;
+  const match = String(text).match(/#\s*(\d+)\s*-\s*(\d+)/) || String(text).match(/#\s*(\d+)/);
+  if (!match) return 0;
+  if (match[2] !== undefined) {
+    const a = parseInt(match[1], 10);
+    const b = parseInt(match[2], 10);
+    if (isNaN(a) || isNaN(b)) return 0;
+    return Math.abs(b - a) + 1;
+  }
+  return 1;
+}
+
+function FiberCalcTab() {
+  const [sheets, setSheets] = useState([]); // [{id, name, code, rows:[{id,text,qty}]}]
+  const [activeSheetId, setActiveSheetId] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [copiedFeedback, setCopiedFeedback] = useState(false);
+
+  // Carrega estado salvo
+  useEffect(() => {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY_FIBER_CALC) || 'null'); } catch (e) {}
+    if (saved && Array.isArray(saved.sheets) && saved.sheets.length > 0) {
+      setSheets(saved.sheets.map(s => ({
+        ...s,
+        rows: (s.rows || []).map(r => {
+          const row = { autoQty: true, ...r };
+          return row.autoQty ? { ...row, qty: parseFiberCount(row.text) } : row;
+        })
+      })));
+      setActiveSheetId(saved.activeSheetId && saved.sheets.some(s => s.id === saved.activeSheetId) ? saved.activeSheetId : saved.sheets[0].id);
+    } else {
+      const first = { id: 'sheet-1', name: 'Cálculo 1', code: 'FS02', rows: [newFiberRow()] };
+      setSheets([first]);
+      setActiveSheetId(first.id);
+    }
+  }, []);
+
+  // Salva estado
+  useEffect(() => {
+    if (sheets.length === 0) return;
+    try { localStorage.setItem(STORAGE_KEY_FIBER_CALC, JSON.stringify({ sheets, activeSheetId })); } catch (e) { console.error('Erro ao salvar calculadora de fibra', e); }
+  }, [sheets, activeSheetId]);
+
+  useCloudSync(
+    'fiber_calc',
+    [sheets, activeSheetId],
+    () => ({ sheets, activeSheetId }),
+    (v) => {
+      if (v && Array.isArray(v.sheets) && v.sheets.length > 0) {
+        setSheets(v.sheets);
+        setActiveSheetId(v.activeSheetId && v.sheets.some(s => s.id === v.activeSheetId) ? v.activeSheetId : v.sheets[0].id);
+      }
+    }
+  );
+
+  const activeSheet = sheets.find(s => s.id === activeSheetId) || sheets[0];
+
+  const updateActiveSheet = (patchFn) => {
+    setSheets(prev => prev.map(s => s.id === activeSheetId ? patchFn(s) : s));
+  };
+
+  const addSheet = () => {
+    const n = { id: 'sheet-' + Date.now(), name: `Cálculo ${sheets.length + 1}`, code: 'FS02', rows: [newFiberRow()] };
+    setSheets(prev => [...prev, n]);
+    setActiveSheetId(n.id);
+  };
+
+  const removeSheet = (id) => {
+    if (sheets.length <= 1) return;
+    const idx = sheets.findIndex(s => s.id === id);
+    const next = sheets.filter(s => s.id !== id);
+    setSheets(next);
+    if (activeSheetId === id) {
+      setActiveSheetId(next[Math.max(0, idx - 1)].id);
+    }
+  };
+
+  const addRow = () => updateActiveSheet(s => ({ ...s, rows: [...s.rows, newFiberRow()] }));
+  const removeRow = (rowId) => updateActiveSheet(s => ({ ...s, rows: s.rows.filter(r => r.id !== rowId) }));
+  const updateRow = (rowId, field, value) => updateActiveSheet(s => ({
+    ...s,
+    rows: s.rows.map(r => {
+      if (r.id !== rowId) return r;
+      if (field === 'text') {
+        // Se a quantidade ainda estiver em modo automático, recalcula a partir do novo texto
+        const nextQty = r.autoQty ? parseFiberCount(value) : r.qty;
+        return { ...r, text: value, qty: nextQty };
+      }
+      if (field === 'qty') {
+        // Edição manual desliga o modo automático dessa linha
+        return { ...r, qty: value, autoQty: false };
+      }
+      return { ...r, [field]: value };
+    })
+  }));
+  const resetAutoQty = (rowId) => updateActiveSheet(s => ({
+    ...s,
+    rows: s.rows.map(r => r.id === rowId ? { ...r, autoQty: true, qty: parseFiberCount(r.text) } : r)
+  }));
+  const setCode = (val) => updateActiveSheet(s => ({ ...s, code: val }));
+
+  if (!activeSheet) return null;
+
+  const rows = activeSheet.rows;
+  const qtys = rows.map(r => Number(r.qty) || 0);
+  const total = qtys.reduce((a, b) => a + b, 0);
+  const equation = qtys.length > 0 ? qtys.map(q => q || 0).join(' + ') : '0';
+  const generatedCode = `${(activeSheet.code || '').trim().toUpperCase() || 'FS02'}X${total}`;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(generatedCode).then(() => {
+      setCopiedFeedback(true);
+      setTimeout(() => setCopiedFeedback(false), 1500);
+    }).catch(() => {});
+  };
+
+  const handleClear = () => {
+    updateActiveSheet(s => ({ ...s, rows: [newFiberRow()] }));
+  };
+
+  return (
+    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* SUB-ABAS DE CÁLCULOS SALVOS */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {sheets.map(s => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center" }}>
+              {renamingId === s.id ? (
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={() => { updateActiveSheet2(s.id, renameValue); setRenamingId(null); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { updateActiveSheet2(s.id, renameValue); setRenamingId(null); } if (e.key === 'Escape') setRenamingId(null); }}
+                  style={{ background: C.panel2, color: C.text, border: `1px solid ${C.pink}`, borderRadius: 5, padding: "6px 10px", fontSize: 11, fontWeight: 700, width: 120, outline: "none" }}
+                />
+              ) : (
+                <button
+                  onClick={() => setActiveSheetId(s.id)}
+                  onDoubleClick={() => { setRenamingId(s.id); setRenameValue(s.name); }}
+                  title="Clique duplo para renomear"
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    background: s.id === activeSheetId ? C.pinkSoft : C.panel2,
+                    color: s.id === activeSheetId ? C.pink : C.textDim,
+                    border: s.id === activeSheetId ? `1px solid ${C.pink}` : `1px solid ${C.border2}`,
+                    borderRadius: 5, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer"
+                  }}
+                >
+                  {s.name}
+                  {sheets.length > 1 && (
+                    <X size={11} onClick={(e) => { e.stopPropagation(); removeSheet(s.id); }} style={{ opacity: 0.6 }} />
+                  )}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        <button onClick={addSheet} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.pink, border: `1px dashed ${C.pink}`, borderRadius: 5, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+          <Plus size={13} /> Novo Cálculo
+        </button>
+      </div>
+
+      <Panel
+        title="Calculadora de Fibra — Riscando"
+        icon={<List size={13} color={C.pink} />}
+        right={
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Código:</span>
+            <select
+              value={activeSheet.code}
+              onChange={(e) => setCode(e.target.value)}
+              style={{ background: C.panel2, color: C.pink, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 8px", fontSize: 11, fontWeight: 800, outline: "none", cursor: "pointer" }}
+            >
+              {CODE_FIELDS.map(f => (
+                <option key={f.id} value={f.id} style={{ background: C.panel }}>{f.id}</option>
+              ))}
+            </select>
+            <button onClick={handleClear} title="Limpar linhas" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "6px 10px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+              <RotateCcw size={12} /> Limpar
+            </button>
+          </div>
+        }
+      >
+        {/* TABELA DE LINHAS */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 0, border: `1px solid ${C.border}`, borderRadius: 6, overflow: "hidden" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "40px 1fr 90px 24px 40px", gap: 0, background: C.panel2, padding: "10px 14px", borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>#</div>
+            <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>Linha</div>
+            <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>Fibras</div>
+            <div></div>
+            <div></div>
+          </div>
+          {rows.map((r, i) => (
+            <div key={r.id} style={{ display: "grid", gridTemplateColumns: "40px 1fr 90px 24px 40px", gap: 0, alignItems: "center", padding: "8px 14px", borderBottom: i === rows.length - 1 ? "none" : `1px solid ${C.borderSoft}` }}>
+              <div style={{ fontSize: 12, color: C.textDim, fontWeight: 700 }}>{i + 1}</div>
+              <input
+                value={r.text}
+                onChange={(e) => updateRow(r.id, 'text', e.target.value)}
+                placeholder="Ex: SE010 IN#1 TO FT031#1"
+                style={{ background: "transparent", color: C.text, border: "none", outline: "none", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", padding: "6px 8px" }}
+              />
+              <input
+                type="number"
+                value={r.qty}
+                onChange={(e) => updateRow(r.id, 'qty', e.target.value)}
+                placeholder="0"
+                title={r.autoQty ? "Calculado automaticamente a partir da faixa # na linha" : "Valor manual (clique no ↺ para voltar ao automático)"}
+                style={{ background: C.panel2, color: r.autoQty ? C.accent : C.pink, border: `1px solid ${r.autoQty ? C.accent : C.border2}`, borderRadius: 5, outline: "none", fontSize: 12, fontWeight: 800, padding: "6px 8px", width: 68, textAlign: "right" }}
+              />
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                {!r.autoQty && (
+                  <RotateCcw size={12} color={C.textDim} onClick={() => resetAutoQty(r.id)} title="Voltar ao cálculo automático" style={{ cursor: "pointer" }} />
+                )}
+              </div>
+              <X size={14} color={C.textFaint} onClick={() => removeRow(r.id)} style={{ cursor: "pointer", justifySelf: "center" }} />
+            </div>
+          ))}
+          <div style={{ display: "grid", gridTemplateColumns: "40px 1fr 90px 24px 40px", gap: 0, alignItems: "center", padding: "10px 14px", background: C.panel2, borderTop: `1px solid ${C.border}` }}>
+            <div></div>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.text, fontFamily: FONT_HEAD }}>Total</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: C.pink, textAlign: "right", paddingRight: 8 }}>{total}</div>
+            <div></div>
+            <div></div>
+          </div>
+        </div>
+
+        <button onClick={addRow} style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 5, padding: "7px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+          <Plus size={13} /> Adicionar Linha
+        </button>
+
+        {/* RESULTADO / RISCANDO */}
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "14px 16px", marginTop: 4 }}>
+          <span style={{ fontSize: 12.5, color: C.text }}>Riscando: <span style={{ color: C.textDim }}>{equation}</span> = <span style={{ color: C.pink, fontWeight: 800 }}>{total}</span> →</span>
+          <span style={{ background: C.pinkSoft, color: C.pink, border: `1px solid ${C.pink}`, borderRadius: 5, padding: "5px 12px", fontSize: 13, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace" }}>
+            {generatedCode}
+          </span>
+          <button onClick={handleCopy} style={{ display: "flex", alignItems: "center", gap: 6, background: copiedFeedback ? C.greenSoft : "transparent", color: copiedFeedback ? C.green : C.textDim, border: `1px solid ${copiedFeedback ? C.green : C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+            <Copy size={12} /> {copiedFeedback ? "Copiado!" : "Copiar Código"}
+          </button>
+        </div>
+      </Panel>
+    </div>
+  );
+
+  function updateActiveSheet2(id, name) {
+    if (!name || !name.trim()) return;
+    setSheets(prev => prev.map(s => s.id === id ? { ...s, name: name.trim() } : s));
+  }
+}
+
+function AutomacaoMapaTab() {
+  const [pdfImage, setPdfImage] = useState(null); // dataURL (compacta) da página do mapa, usada p/ IA e persistida
+  const [mapDisplayImage, setMapDisplayImage] = useState(null); // dataURL em ALTA resolução p/ visualização/zoom (não persistida, pesa demais p/ localStorage)
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState('');
+  const [tagsInput, setTagsInput] = useState('');
+  const [boxes, setBoxes] = useState([]); // {id, tag, x, y, color, text}
+  const [prefixColors, setPrefixColors] = useState({});
+  const [legendLabels, setLegendLabels] = useState({});
+  const [detecting, setDetecting] = useState(false);
+  const [detectError, setDetectError] = useState('');
+  const [addMode, setAddMode] = useState(false);
+  const [dragId, setDragId] = useState(null);
+  const [pendingBox, setPendingBox] = useState(null); // {x, y} — aguardando o texto da caixa
+  const [pendingBoxText, setPendingBoxText] = useState('');
+  const [showAiSection, setShowAiSection] = useState(false); // seção de IA fica oculta por padrão (é opcional)
+  const imgWrapRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
+
+  // Chave de API da Anthropic (persistida separadamente, é só texto)
+  const [apiKey, setApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+
+  // Texto extraído de TODAS as páginas do PDF (pra busca tipo Ctrl+F nas páginas informativas)
+  const [pdfPagesText, setPdfPagesText] = useState([]); // [{page:1, text:'...'}]
+  const [pageSearchQuery, setPageSearchQuery] = useState('');
+  const [pageSearchResults, setPageSearchResults] = useState(null); // null = ainda não buscou
+
+  // Zoom do mapa (100% a 1000%)
+  const [zoom, setZoom] = useState(100);
+
+  // Carrega estado salvo
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_AUTOM);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setPdfImage(parsed.pdfImage || null);
+        setTagsInput(parsed.tagsInput || '');
+        setBoxes(parsed.boxes || []);
+        setPrefixColors(parsed.prefixColors || {});
+        setLegendLabels(parsed.legendLabels || {});
+        setPdfPagesText((parsed.pdfPagesText || []).map((p) => {
+          if (p.compact !== undefined && p.posMap !== undefined) return p;
+          // Compatibilidade com dados salvos numa versão anterior (sem índice compacto)
+          const text = p.text || '';
+          const compactChars = [];
+          const posMap = [];
+          for (let ci = 0; ci < text.length; ci++) {
+            if (!/\s/.test(text[ci])) { compactChars.push(text[ci]); posMap.push(ci); }
+          }
+          return { page: p.page, text, compact: compactChars.join('').toLowerCase(), posMap };
+        }));
+      } catch (e) { console.error('Erro ao carregar automação', e); }
+    }
+    const savedKey = localStorage.getItem(STORAGE_KEY_APIKEY);
+    if (savedKey) setApiKey(savedKey);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_AUTOM, JSON.stringify({ pdfImage, tagsInput, boxes, prefixColors, legendLabels, pdfPagesText }));
+    } catch (e) {
+      // Provavelmente estourou a cota do localStorage (imagem do PDF grande demais).
+      console.error('Erro ao salvar automação (provável limite de armazenamento excedido):', e);
+      try {
+        // Tenta salvar sem a imagem para não perder tags/caixas já detectadas/posicionadas.
+        localStorage.setItem(STORAGE_KEY_AUTOM, JSON.stringify({ pdfImage: null, tagsInput, boxes, prefixColors, legendLabels, pdfPagesText }));
+        setPdfError('O mapa não pôde ser salvo automaticamente (arquivo muito grande para o armazenamento local). As tags/caixas foram mantidas, mas você precisará reenviar o PDF na próxima vez que abrir.');
+      } catch (e2) {
+        console.error('Falha ao salvar mesmo sem a imagem:', e2);
+      }
+    }
+  }, [pdfImage, tagsInput, boxes, prefixColors, legendLabels, pdfPagesText]);
+
+  // Salva a chave de API separadamente (é só texto, não pesa)
+  useEffect(() => {
+    try {
+      if (apiKey) localStorage.setItem(STORAGE_KEY_APIKEY, apiKey);
+    } catch (e) { console.error('Erro ao salvar chave de API', e); }
+  }, [apiKey]);
+
+  const colorForPrefix = (prefix) => {
+    if (prefixColors[prefix]) return prefixColors[prefix];
+    const usedCount = Object.keys(prefixColors).length;
+    const color = PALETTE_AUTOM[usedCount % PALETTE_AUTOM.length];
+    setPrefixColors((prev) => ({ ...prev, [prefix]: color }));
+    return color;
+  };
+
+  // ===== UPLOAD DO PDF -> IMAGEM DA 1ª PÁGINA (O MAPA) =====
+  const handlePdfUpload = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setPdfError('');
+    setPdfLoading(true);
+    setMapDisplayImage(null);
+    try {
+      if (!window.pdfjsLib) throw new Error('Biblioteca de leitura de PDF ainda carregando, tente novamente em instantes.');
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      const page = await pdf.getPage(1); // Página 1 = mapa, conforme confirmado
+
+      // Imagem "compacta": usada para enviar à IA e para persistir no localStorage
+      // (precisa ser leve, senão estoura a cota de armazenamento do navegador).
+      const viewport = page.getViewport({ scale: 1.8 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      setPdfImage(canvas.toDataURL('image/jpeg', 0.85));
+      setBoxes([]);
+      setZoom(100);
+
+      // Imagem de ALTA RESOLUÇÃO: usada só para exibir/dar zoom na tela (não é salva
+      // no localStorage, fica só na memória da sessão). Sem isso, o zoom até 1000%
+      // fica borrado porque estaria ampliando uma imagem pequena.
+      try {
+        const nativeViewport = page.getViewport({ scale: 1 });
+        const MAX_DISPLAY_DIM = 6000; // limite de segurança p/ não estourar memória do navegador
+        let displayScale = Math.min(8, MAX_DISPLAY_DIM / Math.max(nativeViewport.width, nativeViewport.height));
+        if (displayScale < 1.8) displayScale = 1.8;
+        const dViewport = page.getViewport({ scale: displayScale });
+        const dCanvas = document.createElement('canvas');
+        dCanvas.width = dViewport.width;
+        dCanvas.height = dViewport.height;
+        const dCtx = dCanvas.getContext('2d');
+        await page.render({ canvasContext: dCtx, viewport: dViewport }).promise;
+        // PNG (sem perdas) — é um desenho técnico (linhas/texto), não uma foto, então
+        // comprime bem e evita os "blocos" de artefato do JPEG quando você dá zoom.
+        setMapDisplayImage(dCanvas.toDataURL('image/png'));
+      } catch (errHi) {
+        console.error('Não foi possível gerar a imagem em alta resolução, usando a versão padrão:', errHi);
+      }
+
+      // ===== EXTRAI O TEXTO DE TODAS AS PÁGINAS (a 1ª é o mapa, as demais são informativas) =====
+      // Isso é só texto (não pesa quase nada), fica salvo pra permitir a busca tipo Ctrl+F.
+      // Guardamos também uma versão "compacta" (sem espaços) porque o PDF às vezes
+      // separa os caracteres de uma tag com espaços extras (ex: "FT 1 2"), o que
+      // fazia a busca por "FT12" falhar mesmo a tag estando visivelmente ali.
+      const pagesText = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        try {
+          const p = await pdf.getPage(i);
+          const content = await p.getTextContent();
+          const text = content.items.map((it) => it.str).join(' ').replace(/\s+/g, ' ').trim();
+          const compactChars = [];
+          const posMap = [];
+          for (let ci = 0; ci < text.length; ci++) {
+            if (!/\s/.test(text[ci])) { compactChars.push(text[ci]); posMap.push(ci); }
+          }
+          pagesText.push({ page: i, text, compact: compactChars.join('').toLowerCase(), posMap });
+        } catch (errPage) {
+          console.error('Erro ao extrair texto da página ' + i, errPage);
+          pagesText.push({ page: i, text: '', compact: '', posMap: [] });
+        }
+      }
+      setPdfPagesText(pagesText);
+      setPageSearchQuery('');
+      setPageSearchResults(null);
+    } catch (err) {
+      console.error(err);
+      setPdfError('Não foi possível ler o PDF: ' + err.message);
+    } finally {
+      setPdfLoading(false);
+    }
+  };
+
+  // ===== BUSCA TIPO "CTRL+F" NAS PÁGINAS INFORMATIVAS DO PDF =====
+  const searchInPages = () => {
+    const qCompact = pageSearchQuery.replace(/\s+/g, '').toLowerCase();
+    if (!qCompact) { setPageSearchResults(null); return; }
+    const results = [];
+    pdfPagesText.forEach((p) => {
+      let idx = p.compact.indexOf(qCompact);
+      let count = 0;
+      const snippets = [];
+      while (idx !== -1 && count < 20) {
+        const origStart = p.posMap[idx];
+        const origEndIdx = p.posMap[idx + qCompact.length - 1];
+        if (origStart != null && origEndIdx != null && snippets.length < 5) {
+          const start = Math.max(0, origStart - 45);
+          const end = Math.min(p.text.length, origEndIdx + 1 + 45);
+          snippets.push({
+            before: (start > 0 ? '…' : '') + p.text.slice(start, origStart),
+            match: p.text.slice(origStart, origEndIdx + 1),
+            after: p.text.slice(origEndIdx + 1, end) + (end < p.text.length ? '…' : '')
+          });
+        }
+        count++;
+        idx = p.compact.indexOf(qCompact, idx + qCompact.length);
+      }
+      if (count > 0) results.push({ page: p.page, count, snippets });
+    });
+    setPageSearchResults(results);
+  };
+
+  // ===== DETECÇÃO DAS TAGS PELA IA =====
+  const detectTags = async () => {
+    const tagList = tagsInput.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
+    if (!apiKey.trim()) {
+      setDetectError('Informe sua chave de API da Anthropic no campo acima antes de detectar as tags.');
+      return;
+    }
+    if (!pdfImage || tagList.length === 0) {
+      setDetectError('Envie o mapa e informe ao menos uma tag para localizar.');
+      return;
+    }
+    setDetecting(true);
+    setDetectError('');
+    try {
+      const base64Data = pdfImage.split(',')[1];
+      const prompt = `Você é um sistema de visão computacional analisando um mapa técnico de rede de fibra óptica.
+Localize nesta imagem, com a maior precisão possível, cada uma destas tags/códigos: ${tagList.join(', ')}.
+Para cada tag, informe a posição do CENTRO exato do texto/símbolo dela na imagem, em porcentagem (0 a 100) da largura (x) e da altura (y) totais da imagem.
+Responda SOMENTE com um JSON válido (sem markdown, sem texto antes ou depois), no formato exato:
+[{"tag":"NOME_DA_TAG","x":42.3,"y":18.7,"found":true}]
+Se não conseguir localizar alguma tag com confiança razoável, inclua-a com "found":false, "x":null,"y":null.`;
+      let response;
+      try {
+        response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey.trim(),
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 2000,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Data } },
+                { type: 'text', text: prompt }
+              ]
+            }]
+          })
+        });
+      } catch (networkErr) {
+        // "Failed to fetch" normalmente é bloqueio de rede/CORS, não erro da chave.
+        throw new Error('Falha de conexão com a API da Anthropic ("Failed to fetch"). Verifique sua internet ou se algum bloqueador de anúncios/firewall está bloqueando api.anthropic.com.');
+      }
+
+      if (!response.ok) {
+        let msg = 'Erro HTTP ' + response.status;
+        try {
+          const errBody = await response.json();
+          if (errBody && errBody.error && errBody.error.message) msg = errBody.error.message;
+        } catch (e) { /* ignora */ }
+        if (response.status === 401) msg = 'Chave de API inválida ou expirada. Confira o valor informado.';
+        throw new Error(msg);
+      }
+
+      const data = await response.json();
+      const textOut = (data.content || []).map((b) => b.text || '').join('');
+      const clean = textOut.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(clean);
+
+      const newBoxes = [];
+      parsed.forEach((item) => {
+        if (item.found && item.x != null && item.y != null) {
+          const prefix = getPrefix(item.tag);
+          newBoxes.push({
+            id: 'box-' + item.tag + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+            tag: item.tag,
+            x: item.x,
+            y: item.y,
+            color: colorForPrefix(prefix),
+            text: item.tag
+          });
+        }
+      });
+      setBoxes((prev) => [...prev, ...newBoxes]);
+
+      const notFound = parsed.filter((i) => !i.found).map((i) => i.tag);
+      if (notFound.length > 0) {
+        setDetectError(`Não localizadas automaticamente (adicione manualmente): ${notFound.join(', ')}`);
+      }
+    } catch (err) {
+      console.error(err);
+      setDetectError('Falha na detecção por IA: ' + err.message);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  // ===== ARRASTAR CAIXAS =====
+  const onBoxPointerDown = (id) => (e) => {
+    e.stopPropagation();
+    setDragId(id);
+  };
+
+  const onWrapPointerMove = (e) => {
+    if (!dragId || !imgWrapRef.current) return;
+    const rect = imgWrapRef.current.getBoundingClientRect();
+    const x = Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100));
+    const y = Math.min(100, Math.max(0, ((e.clientY - rect.top) / rect.height) * 100));
+    setBoxes((prev) => prev.map((b) => (b.id === dragId ? { ...b, x, y } : b)));
+  };
+
+  const onWrapPointerUp = () => setDragId(null);
+
+  const onWrapClick = (e) => {
+    if (!addMode || !imgWrapRef.current) return;
+    const rect = imgWrapRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    setPendingBox({ x, y });
+    setPendingBoxText('');
+  };
+
+  const confirmPendingBox = () => {
+    const tag = pendingBoxText.trim();
+    if (!tag || !pendingBox) { setPendingBox(null); setPendingBoxText(''); return; }
+    const prefix = getPrefix(tag.split('\n')[0].trim());
+    setBoxes((prev) => [...prev, {
+      id: 'box-manual-' + Date.now(),
+      tag, x: pendingBox.x, y: pendingBox.y, color: colorForPrefix(prefix), text: tag
+    }]);
+    setPendingBox(null);
+    setPendingBoxText('');
+  };
+
+  const cancelPendingBox = () => { setPendingBox(null); setPendingBoxText(''); };
+
+  const updateBoxText = (id, text) => setBoxes((prev) => prev.map((b) => (b.id === id ? { ...b, text } : b)));
+  const removeBox = (id) => setBoxes((prev) => prev.filter((b) => b.id !== id));
+
+  const legendPrefixes = useMemo(() => {
+    const seen = {};
+    boxes.forEach((b) => { seen[getPrefix(b.tag)] = b.color; });
+    return seen;
+  }, [boxes]);
+
+  // ===== EXPORTAR IMAGEM FINAL (MAPA + CAIXAS) =====
+  const exportImage = () => {
+    const sourceImage = mapDisplayImage || pdfImage;
+    if (!sourceImage) return;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      boxes.forEach((b) => {
+        const px = (b.x / 100) * img.width;
+        const py = (b.y / 100) * img.height;
+        const fontSize = Math.max(14, img.width * 0.011);
+        ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`;
+        const textWidth = ctx.measureText(b.text).width;
+        const padX = fontSize * 0.5, padY = fontSize * 0.35;
+        const boxW = textWidth + padX * 2, boxH = fontSize + padY * 2;
+        ctx.fillStyle = b.color;
+        ctx.globalAlpha = 0.92;
+        ctx.fillRect(px - boxW / 2, py - boxH / 2, boxW, boxH);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px - boxW / 2, py - boxH / 2, boxW, boxH);
+        ctx.fillStyle = '#000';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(b.text, px, py + 1);
+      });
+      const link = document.createElement('a');
+      link.download = 'mapa_asbuilt_automatico.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    };
+    img.src = sourceImage;
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <Panel
+        title="AUTOMAÇÃO — LOCALIZAÇÃO DE TAGS NO MAPA"
+        icon={<Wand2 size={13} color={C.purple} />}
+        right={
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.accent, color: '#000', border: 'none', borderRadius: 5, padding: '8px 14px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+            >
+              <UploadIcon size={13} /> {pdfLoading ? 'Carregando...' : 'Enviar PDF do Mapa'}
+            </button>
+            <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handlePdfUpload} style={{ display: 'none' }} />
+            {pdfImage && (
+              <button onClick={exportImage} style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.green, color: '#000', border: 'none', borderRadius: 5, padding: '8px 14px', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
+                <Download size={13} /> Exportar Mapa Marcado (.PNG)
+              </button>
+            )}
+          </div>
+        }
+      >
+        <div style={{ fontSize: 10.5, color: C.textDim, lineHeight: 1.6 }}>
+          O sistema lê a <strong style={{ color: C.text }}>1ª página do PDF</strong> (o mapa) e extrai o texto de todas as demais páginas (informativas) para permitir busca. Use <strong style={{ color: C.accent }}>"Adicionar Caixa Manual"</strong> e cole o texto copiado da aba Produção — não precisa de IA nem de chave de API para isso. A detecção automática por IA é opcional.
+        </div>
+
+        {pdfError && <div style={{ color: C.red, fontSize: 11, fontWeight: 700 }}>{pdfError}</div>}
+
+        {pdfImage && (
+          <>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setAddMode((v) => !v)}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, background: addMode ? C.amber : C.accent, color: '#000', border: 'none', borderRadius: 5, padding: '9px 16px', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
+              >
+                <Crosshair size={13} /> {addMode ? 'Clique no mapa p/ adicionar' : 'Adicionar Caixa Manual (colar texto)'}
+              </button>
+              <button
+                onClick={() => setShowAiSection((v) => !v)}
+                type="button"
+                style={{ display: 'flex', alignItems: 'center', gap: 6, background: showAiSection ? 'rgba(179,136,255,0.15)' : C.panel2, color: C.purple, border: `1px solid ${C.purple}`, borderRadius: 5, padding: '9px 16px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+              >
+                <Wand2 size={13} /> Detecção Automática por IA (opcional)
+                {showAiSection ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </button>
+            </div>
+
+            {showAiSection && (
+              <div style={{ background: 'rgba(179,136,255,0.06)', border: `1px solid ${C.purple}`, borderRadius: 6, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 9.5, color: C.textDim, lineHeight: 1.5 }}>
+                  Esse recurso é <strong style={{ color: C.text }}>opcional</strong>: chama a IA da Anthropic pela internet pra tentar achar as tags sozinha na imagem. Precisa da sua própria chave de API (console.anthropic.com), que é cobrada por uso na sua conta. Se preferir, ignore esta seção e use só o modo manual acima.
+                </div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 260 }}>
+                    <Field label="Chave de API da Anthropic">
+                      <input
+                        type={showApiKey ? 'text' : 'password'}
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        placeholder="sk-ant-..."
+                        style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: '8px 10px', fontSize: 11, outline: 'none', fontFamily: "'JetBrains Mono', monospace", width: '100%' }}
+                      />
+                    </Field>
+                  </div>
+                  <button
+                    onClick={() => setShowApiKey((v) => !v)}
+                    type="button"
+                    style={{ background: C.panel, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: '8px 12px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', height: 32 }}
+                  >
+                    {showApiKey ? 'Ocultar' : 'Mostrar'}
+                  </button>
+                </div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <Field label="Tags a localizar (separadas por vírgula ou linha)">
+                    <textarea
+                      value={tagsInput}
+                      onChange={(e) => setTagsInput(e.target.value)}
+                      placeholder="Ex: FT063, SE015, FE28"
+                      rows={2}
+                      style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: '8px 10px', fontSize: 11, outline: 'none', fontFamily: "'JetBrains Mono', monospace", width: 340, resize: 'vertical' }}
+                    />
+                  </Field>
+                  <button
+                    onClick={detectTags}
+                    disabled={detecting}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.purple, color: '#000', border: 'none', borderRadius: 5, padding: '9px 16px', fontSize: 11, fontWeight: 800, cursor: detecting ? 'default' : 'pointer', opacity: detecting ? 0.6 : 1 }}
+                  >
+                    <Wand2 size={13} /> {detecting ? 'Analisando mapa...' : 'Detectar Tags com IA'}
+                  </button>
+                </div>
+                {detectError && <div style={{ color: C.amber, fontSize: 10.5, fontWeight: 600 }}>{detectError}</div>}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: '8px 12px' }}>
+              <ZoomOut size={14} color={C.textDim} style={{ cursor: 'pointer' }} onClick={() => setZoom((z) => Math.max(100, z - 50))} />
+              <input
+                type="range"
+                min={100}
+                max={1000}
+                step={10}
+                value={zoom}
+                onChange={(e) => setZoom(Number(e.target.value))}
+                style={{ flex: 1 }}
+              />
+              <ZoomIn size={14} color={C.textDim} style={{ cursor: 'pointer' }} onClick={() => setZoom((z) => Math.min(1000, z + 50))} />
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.accent, width: 52, textAlign: 'right' }}>{zoom}%</span>
+              <button onClick={() => setZoom(100)} type="button" style={{ background: C.panel, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: '5px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Redefinir</button>
+            </div>
+
+            {!mapDisplayImage && (
+              <div style={{ fontSize: 10, color: C.amber, fontWeight: 600 }}>
+                ⚠ Exibindo em qualidade reduzida (dados de uma sessão anterior). Reenvie o PDF do mapa para visualizar em alta resolução e dar zoom nítido até 1000%.
+              </div>
+            )}
+
+            <div style={{ width: '100%', maxHeight: '75vh', overflow: 'auto', border: `1px solid ${C.border2}`, borderRadius: 6 }}>
+              <div
+                ref={imgWrapRef}
+                onPointerMove={onWrapPointerMove}
+                onPointerUp={onWrapPointerUp}
+                onPointerLeave={onWrapPointerUp}
+                onClick={onWrapClick}
+                style={{ position: 'relative', width: `${zoom}%`, cursor: addMode ? 'crosshair' : 'default', userSelect: 'none' }}
+              >
+                <img src={mapDisplayImage || pdfImage} alt="Mapa" style={{ width: '100%', display: 'block', pointerEvents: 'none' }} draggable={false} />
+                {boxes.map((b) => (
+                  <div
+                    key={b.id}
+                    onPointerDown={onBoxPointerDown(b.id)}
+                    style={{
+                      position: 'absolute', left: `${b.x}%`, top: `${b.y}%`, transform: 'translate(-50%, -50%)',
+                      background: b.color, color: '#000', fontSize: 10, fontWeight: 800, borderRadius: 3,
+                      border: '1px solid #000', padding: '4px 16px 4px 6px', cursor: 'grab',
+                      whiteSpace: 'pre-line', textAlign: 'center', lineHeight: 1.35, maxWidth: 200,
+                      boxShadow: '0 1px 4px rgba(0,0,0,0.5)', touchAction: 'none'
+                    }}
+                  >
+                    <span
+                      contentEditable
+                      suppressContentEditableWarning
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onBlur={(e) => updateBoxText(b.id, e.target.innerText)}
+                      style={{ outline: 'none', minWidth: 10, display: 'inline-block' }}
+                    >{b.text}</span>
+                    <X size={9} onClick={(e) => { e.stopPropagation(); removeBox(b.id); }} style={{ position: 'absolute', top: 2, right: 2, cursor: 'pointer' }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {pendingBox && (
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 16 }}>
+                <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 18, width: 380 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: C.accent, marginBottom: 10 }}>Colar / Digitar Texto da Caixa</div>
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 8, lineHeight: 1.5 }}>
+                    Cole aqui (Ctrl+V) o texto que você copiou na aba Produção, ou digite manualmente. Pode ter várias linhas.
+                  </div>
+                  <textarea
+                    autoFocus
+                    value={pendingBoxText}
+                    onChange={(e) => setPendingBoxText(e.target.value)}
+                    rows={4}
+                    placeholder={'Ex:\nFT068\n#5\nFS01X5 FS16X1'}
+                    style={{ width: '100%', background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: 8, fontSize: 11, outline: 'none', fontFamily: "'JetBrains Mono', monospace", resize: 'vertical' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                    <button onClick={cancelPendingBox} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: '8px 14px', fontSize: 11, cursor: 'pointer' }}>Cancelar</button>
+                    <button onClick={confirmPendingBox} style={{ background: C.accent, color: '#000', border: 'none', borderRadius: 5, padding: '8px 16px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Adicionar Caixa</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {pdfPagesText.length > 0 && (
+              <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 12 }}>
+                <div style={{ fontWeight: 700, color: C.textDim, fontSize: 10, marginBottom: 8, textTransform: 'uppercase' }}>
+                  Buscar Tag nas Páginas Informativas (tipo Ctrl+F) — {pdfPagesText.length} página(s) indexada(s)
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <input
+                    value={pageSearchQuery}
+                    onChange={(e) => setPageSearchQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') searchInPages(); }}
+                    placeholder="Ex: FT063"
+                    style={{ flex: 1, background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: '8px 10px', fontSize: 11, outline: 'none', fontFamily: "'JetBrains Mono', monospace" }}
+                  />
+                  <button
+                    onClick={searchInPages}
+                    type="button"
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.accent, color: '#000', border: 'none', borderRadius: 5, padding: '8px 14px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                  >
+                    <Search size={13} /> Buscar
+                  </button>
+                </div>
+
+                {pageSearchResults !== null && (
+                  pageSearchResults.length === 0 ? (
+                    <div style={{ fontSize: 11, color: C.red, fontWeight: 600 }}>Nenhuma ocorrência encontrada nas páginas informativas.</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflowY: 'auto' }}>
+                      {pageSearchResults.map((r) => (
+                        <div key={r.page} style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 5, padding: '8px 10px' }}>
+                          <div style={{ fontSize: 10.5, fontWeight: 800, color: C.accent, marginBottom: 4 }}>
+                            Página {r.page} — {r.count} ocorrência(s)
+                          </div>
+                          {r.snippets.map((s, i) => (
+                            <div key={i} style={{ fontSize: 10.5, color: C.textDim, lineHeight: 1.5, marginBottom: 2 }}>
+                              {s.before}<span style={{ background: C.amber, color: '#000', fontWeight: 800, padding: '0 2px', borderRadius: 2 }}>{s.match}</span>{s.after}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+
+            {Object.keys(legendPrefixes).length > 0 && (
+              <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 12 }}>
+                <div style={{ fontWeight: 700, color: C.textDim, fontSize: 10, marginBottom: 8, textTransform: 'uppercase' }}>Legenda</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                  {Object.entries(legendPrefixes).map(([prefix, color]) => (
+                    <div key={prefix} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ width: 14, height: 14, background: color, border: '1px solid #000', borderRadius: 3, flexShrink: 0 }} />
+                      <span style={{ fontSize: 10.5, color: C.textDim, fontWeight: 700 }}>{prefix}:</span>
+                      <input
+                        value={legendLabels[prefix] || ''}
+                        onChange={(e) => setLegendLabels((prev) => ({ ...prev, [prefix]: e.target.value }))}
+                        placeholder="descrição..."
+                        style={{ background: 'transparent', border: 'none', borderBottom: `1px solid ${C.border2}`, color: C.text, fontSize: 10.5, outline: 'none', width: 130 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function ProductionDashboard() {
+  // Carrega do localStorage se existir, senão usa o inicial
+  const [projects, setProjects] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    let data = INITIAL_DEFAULT_DATA;
+    if (saved) {
+      try {
+        data = JSON.parse(saved);
+      } catch (e) {
+        console.error("Erro ao carregar dados locais", e);
+      }
+    }
+    // Migração do sistema antigo (Semana Atual/Anterior) para o novo (Semana 1-4)
+    return data.map((p) => {
+      if (p.cycle === 'CURRENT_WEEK') return { ...p, cycle: 'SEMANA_1' };
+      if (p.cycle === 'PREVIOUS_WEEK') return { ...p, cycle: 'SEMANA_2' };
+      return p;
+    });
+  });
+
+  // Semana atualmente "aberta" para lançamentos (as outras ficam "fechadas"/histórico)
+  const [openWeek, setOpenWeek] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_OPEN_WEEK);
+    return saved && WEEK_OPTIONS.some((w) => w.id === saved) ? saved : 'SEMANA_1';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_OPEN_WEEK, openWeek); } catch (e) { console.error('Erro ao salvar semana aberta', e); }
+  }, [openWeek]);
+  useCloudSync('open_week', [openWeek], () => openWeek, (v) => setOpenWeek(v));
+
+  // ===== ARQUIVO/HISTÓRICO MENSAL (reset manual das semanas) =====
+  const [archives, setArchives] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_ARCHIVE);
+    if (saved) { try { return JSON.parse(saved); } catch (e) { console.error('Erro ao carregar histórico', e); } }
+    return [];
+  });
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_ARCHIVE, JSON.stringify(archives)); } catch (e) { console.error('Erro ao salvar histórico', e); }
+  }, [archives]);
+  useCloudSync('archives', [archives], () => archives, (v) => setArchives(v));
+
+  const handleResetMonth = () => {
+    if (projects.length === 0) { alert('Não há itens para arquivar — a lista já está vazia.'); return; }
+    const suggestion = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    const label = window.prompt('Vamos arquivar TODOS os itens atuais (Semanas 1-4) e começar um novo mês do zero.\n\nDê um nome para o mês que está sendo arquivado:', suggestion);
+    if (label === null) return; // cancelou
+    const snapshot = {
+      id: 'arch-' + Date.now(),
+      archivedAt: new Date().toISOString(),
+      label: label.trim() || suggestion,
+      projects
+    };
+    setArchives((prev) => [snapshot, ...prev]);
+    setProjects([]);
+    setOpenWeek('SEMANA_1');
+    setSelectedCycle('SEMANA_1');
+  };
+
+  const handleRestoreArchive = (archiveId) => {
+    const arch = archives.find((a) => a.id === archiveId);
+    if (!arch) return;
+    if (!confirm(`Restaurar "${arch.label}"? Isso vai SUBSTITUIR os itens atuais (${projects.length}) pelos ${arch.projects.length} itens arquivados. Se quiser manter os atuais, arquive-os primeiro.`)) return;
+    setProjects(arch.projects);
+    setArchives((prev) => prev.filter((a) => a.id !== archiveId));
+    setShowArchiveModal(false);
+  };
+
+  const handleDeleteArchive = (archiveId) => {
+    if (!confirm('Excluir este arquivo permanentemente? Não dá pra desfazer.')) return;
+    setArchives((prev) => prev.filter((a) => a.id !== archiveId));
+  };
+
+  // ===== BOTÃO "STATUS": TEXTO PRONTO OU PRINT PARA MANDAR NO WHATSAPP (MANUAL) =====
+  const statusCaptureRef = React.useRef(null);
+  const [statusFeedback, setStatusFeedback] = useState(""); // "" | "texto" | "imagem"
+
+  const copyToClipboardGeneric = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        return true;
+      } catch (e2) {
+        console.error('Falha ao copiar', e2);
+        return false;
+      }
+    }
+  };
+
+  const copyStatusText = async () => {
+    const topPriority = filteredAndSorted[0]?.otCount > 0 ? `${filteredAndSorted[0].map} (${filteredAndSorted[0].otCount} OTs)` : "Nenhuma";
+    const lines = [
+      `📊 *STATUS DA PRODUÇÃO* — ${new Date().toLocaleDateString('pt-BR')}`,
+      ``,
+      `✅ Taxa de Conclusão: *${kpis.rate}%*`,
+      `🗺️ Mapas: ${kpis.total} total | ${kpis.ok} finalizados | ${kpis.pending} em andamento`,
+      ``,
+      `⚠️ OTs a Fazer: *${kpis.totalOTs}*`,
+      `🔥 Prioridade Máxima: *${topPriority}*`,
+      ``,
+      `📐 AS-BUILT: ${kpis.ok} prontos | ${kpis.pending} pendentes/revisão`,
+      `📄 Invoices: ${kpis.invoiceUpdated}/${kpis.total} atualizadas`,
+      `📘 Workbooks: ${kpis.workbookUpdated}/${kpis.total} atualizados`
+    ];
+    const ok = await copyToClipboardGeneric(lines.join('\n'));
+    if (ok) {
+      setStatusFeedback('texto');
+      setTimeout(() => setStatusFeedback(''), 2000);
+    } else {
+      alert('Não foi possível copiar automaticamente. Tente novamente.');
+    }
+  };
+
+  const captureStatusImage = async () => {
+    if (!window.html2canvas) { alert('Biblioteca de captura ainda carregando, tente novamente em instantes.'); return; }
+    const node = statusCaptureRef.current;
+    if (!node) return;
+    try {
+      const canvas = await window.html2canvas(node, { backgroundColor: '#0b0f16', scale: 2 });
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        const fileName = `Status_Producao_${new Date().toISOString().slice(0, 10)}.png`;
+        // Em celular com suporte, tenta abrir direto o menu de compartilhamento (permite escolher o WhatsApp)
+        try {
+          const file = new File([blob], fileName, { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Status da Produção' });
+            setStatusFeedback('imagem');
+            setTimeout(() => setStatusFeedback(''), 2000);
+            return;
+          }
+        } catch (shareErr) {
+          // Cancelado ou não suportado — cai para o download abaixo
+        }
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        setStatusFeedback('imagem');
+        setTimeout(() => setStatusFeedback(''), 2000);
+      }, 'image/png');
+    } catch (e) {
+      console.error('Erro ao capturar imagem de status', e);
+      alert('Não foi possível gerar a imagem. Tente novamente.');
+    }
+  };
+
+  const [search, setSearch] = useState("");
+  const [selectedCycle, setSelectedCycle] = useState("SEMANA_1");
+  const [showModal, setShowModal] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const [modalMode, setModalMode] = useState("GENERAL"); // 'GENERAL' (Controle Geral / Novo Item) ou 'QUEUE' (Prioridade da Fila — atualização diária de AS-BUILT)
+  const [perfTab, setPerfTab] = useState("PRODUCAO_SEMANA");
+
+  // ===== ABA (DASHBOARD DE CONTROLE x PRODUÇÃO & CÓDIGOS AS-BUILT) =====
+  const [activeTab, setActiveTab] = useState("DASHBOARD");
+
+  const [productionList, setProductionList] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_PRODUCTION);
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error("Erro ao carregar produção", e); }
+    }
+    return INITIAL_PRODUCTION;
+  });
+  const [searchProd, setSearchProd] = useState("");
+  const [showProdModal, setShowProdModal] = useState(false);
+  const [editingProd, setEditingProd] = useState(null);
+  const [selectedMapProd, setSelectedMapProd] = useState("ALL");
+  const [copiedRowId, setCopiedRowId] = useState(null);
+
+  // ===== COPIAR TEXTO PRONTO (LOCAL + SPLICE + CÓDIGOS) PARA COLAR NA AUTOMAÇÃO =====
+  const copyProdToClipboard = async (item) => {
+    const asbuiltText = computeAsbuiltFormat(item.codes);
+    const lines = [item.location, item.splice ? `#${item.splice}` : '', asbuiltText].filter(Boolean);
+    const text = lines.join('\n');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // Fallback para navegadores/contextos sem permissão de Clipboard API
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (e2) {
+        console.error('Falha ao copiar', e2);
+        return;
+      }
+    }
+    setCopiedRowId(item.id);
+    setTimeout(() => setCopiedRowId((id) => (id === item.id ? null : id)), 1500);
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_PRODUCTION, JSON.stringify(productionList));
+    } catch (e) {
+      console.error('Erro ao salvar lista de produção:', e);
+    }
+  }, [productionList]);
+  useCloudSync('production_list', [productionList], () => productionList, (v) => setProductionList(v));
+
+  // Grava automaticamente no localStorage sempre que 'projects' for alterado
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+    } catch (e) {
+      console.error('Erro ao salvar projetos:', e);
+    }
+  }, [projects]);
+  useCloudSync('projects', [projects], () => projects, (v) => setProjects(v));
+
+  const filteredAndSorted = useMemo(() => {
+    return projects.filter((p) => {
+      if (selectedCycle !== "ALL" && p.cycle !== selectedCycle) return false;
+
+      if (search) {
+        const s = search.toLowerCase();
+        const matchMap = (p.map || "").toLowerCase().includes(s);
+        const matchTech = (p.asbuiltTech || "").toLowerCase().includes(s) || (p.invoiceTech || "").toLowerCase().includes(s) || (p.workbookTech || "").toLowerCase().includes(s);
+        const matchNote = (p.note || "").toLowerCase().includes(s);
+        if (!matchMap && !matchTech && !matchNote) return false;
+      }
+      return true;
+    }).sort((a, b) => (b.otCount || 0) - (a.otCount || 0));
+  }, [projects, search, selectedCycle]);
+
+  const otQueueItems = useMemo(() => {
+    return filteredAndSorted.filter(p => p.otCount > 0);
+  }, [filteredAndSorted]);
+
+  // DESEMPENHO POR COLABORADOR: CADA ATUALIZAÇÃO SOMA 1 PONTO
+  const perfCollaborators = useMemo(() => {
+    const mapTechs = {};
+
+    const registerTechUpdate = (techName, stageName, isCompleted, otCount) => {
+      if (!techName) return;
+      const key = techName.toUpperCase().trim();
+
+      if (!mapTechs[key]) {
+        mapTechs[key] = {
+          name: key,
+          updatesCount: 0,
+          asbuiltCount: 0,
+          invoiceCount: 0,
+          workbookCount: 0,
+          pendingOts: 0
+        };
+      }
+
+      if (isCompleted) {
+        mapTechs[key].updatesCount += 1; // +1 Ponto por etapa concluída!
+        if (stageName === 'AB') mapTechs[key].asbuiltCount += 1;
+        if (stageName === 'INV') mapTechs[key].invoiceCount += 1;
+        if (stageName === 'WB') mapTechs[key].workbookCount += 1;
+      } else {
+        mapTechs[key].pendingOts += otCount || 0;
+      }
+    };
+
+    filteredAndSorted.forEach(p => {
+      const isAbDone = p.asbuiltStatus === "OK";
+      const isInvDone = p.invoiceStatus === "SIM" || p.invoiceStatus === "OK";
+      const isWbDone = p.workbookStatus === "SIM" || p.workbookStatus === "OK";
+
+      registerTechUpdate(p.asbuiltTech, 'AB', isAbDone, p.otCount);
+      registerTechUpdate(p.invoiceTech, 'INV', isInvDone, 0);
+      registerTechUpdate(p.workbookTech, 'WB', isWbDone, 0);
+    });
+
+    return Object.values(mapTechs).sort((a, b) => b.updatesCount - a.updatesCount);
+  }, [filteredAndSorted]);
+
+  const delayedItems = useMemo(() => {
+    return filteredAndSorted.filter(p => p.status !== "OK" || p.otCount > 0);
+  }, [filteredAndSorted]);
+
+  const kpis = useMemo(() => {
+    const total = filteredAndSorted.length;
+    const ok = filteredAndSorted.filter(p => p.status === "OK" || (p.asbuiltStatus === "OK" && p.invoiceStatus === "SIM" && p.workbookStatus === "SIM")).length;
+    const pending = total - ok;
+    const totalOTs = filteredAndSorted.reduce((acc, p) => acc + (p.otCount || 0), 0);
+    const invoiceUpdated = filteredAndSorted.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK").length;
+    const workbookUpdated = filteredAndSorted.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK").length;
+    const rate = total > 0 ? Math.round((ok / total) * 100) : 0;
+
+    return { total, ok, pending, totalOTs, invoiceUpdated, workbookUpdated, rate };
+  }, [filteredAndSorted]);
+
+  const statusBadge = (st) => {
+    switch (st) {
+      case "OK": return <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>PRONTO</span>;
+      case "PENDING_REVISION": return <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>REVISÃO NECESSÁRIA</span>;
+      default: return <span style={{ background: C.panel2, color: C.textDim, border: `1px solid ${C.border2}`, padding: "2px 6px", borderRadius: 4, fontSize: 10 }}>SEM ATUALIZAÇÃO</span>;
+    }
+  };
+
+  const handleSaveItem = (item) => {
+    const isFullyDone = item.asbuiltStatus === "OK" && item.invoiceStatus === "SIM" && item.workbookStatus === "SIM";
+    
+    const finalItem = {
+      ...item,
+      cycle: item.cycle || "SEMANA_1",
+      status: isFullyDone ? "OK" : (item.status || "NO_UPDATE"),
+      otCount: item.asbuiltStatus === "OK" ? 0 : Number(item.otCount || 0)
+    };
+
+    if (finalItem.id) {
+      setProjects(prev => prev.map(p => p.id === finalItem.id ? finalItem : p));
+    } else {
+      setProjects(prev => [...prev, { ...finalItem, id: `item-${Date.now()}` }]);
+    }
+    setShowModal(false);
+    setEditingItem(null);
+  };
+
+  const handleDeleteItem = (id) => {
+    if (confirm("Deseja realmente remover este item do sistema?")) {
+      setProjects(prev => prev.filter(p => p.id !== id));
+    }
+  };
+
+  // ===== LÓGICA DA ABA PRODUÇÃO & CÓDIGOS AS-BUILT =====
+  // Lista de mapas/projetos únicos existentes na produção, com contagem de registros de cada um
+  const availableMaps = useMemo(() => {
+    const counts = {};
+    productionList.forEach(item => {
+      const key = (item.map || "SEM MAPA").trim() || "SEM MAPA";
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return Object.keys(counts).sort().map(map => ({ map, count: counts[map] }));
+  }, [productionList]);
+
+  // Aplica o filtro de mapa selecionado antes da busca por texto
+  const productionByMap = useMemo(() => {
+    if (selectedMapProd === "ALL") return productionList;
+    return productionList.filter(p => (p.map || "SEM MAPA").trim() === selectedMapProd || (!p.map && selectedMapProd === "SEM MAPA"));
+  }, [productionList, selectedMapProd]);
+
+  const filteredProduction = useMemo(() => {
+    return productionByMap.filter(p => !searchProd || JSON.stringify(p).toLowerCase().includes(searchProd.toLowerCase()));
+  }, [productionByMap, searchProd]);
+
+  // Totais acumulados agora respeitam o mapa selecionado (e a busca), não mais a lista inteira
+  const codeTotals = useMemo(() => {
+    const totals = {};
+    CODE_FIELDS.forEach(f => totals[f.id] = 0);
+    filteredProduction.forEach(item => {
+      CODE_FIELDS.forEach(f => {
+        totals[f.id] += Number(item.codes?.[f.id]) || 0;
+      });
+    });
+    return totals;
+  }, [filteredProduction]);
+
+  const handleSaveProd = (item) => {
+    if (item.id) {
+      setProductionList(prev => prev.map(p => p.id === item.id ? item : p));
+    } else {
+      setProductionList(prev => [...prev, { ...item, id: `prod-${Date.now()}` }]);
+    }
+    setShowProdModal(false);
+    setEditingProd(null);
+  };
+
+  const handleDeleteProd = (id) => {
+    if (confirm("Deseja remover este registro de produção?")) {
+      setProductionList(prev => prev.filter(p => p.id !== id));
+    }
+  };
+
+  // ===== EXPORTAR .XLSX COM CORES (igual ao padrão usado na planilha do Google Sheets) =====
+  const exportProdXLSX = async () => {
+    if (!window.ExcelJS) {
+      alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
+      return;
+    }
+    const mainHeaders = ["DAILY", "PENDINGS", "DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE"];
+    const codeHeaders = CODE_FIELDS.map((f) => f.label);
+    const headers = [...mainHeaders, ...codeHeaders, "ASBUILT (GERADO)"];
+    const nMain = mainHeaders.length;
+    const nCode = codeHeaders.length;
+    const totalCols = headers.length;
+    const colLetter = (n) => {
+      let s = '';
+      while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+      return s;
+    };
+
+    const wb = new window.ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Produção As-Built');
+
+    // ----- LINHA 1: TOTAIS -----
+    const totalsRowData = new Array(totalCols).fill('');
+    totalsRowData[0] = `TOTAIS ${selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`} -->`;
+    CODE_FIELDS.forEach((f, i) => { totalsRowData[nMain + i] = codeTotals[f.id] || 0; });
+    totalsRowData[totalCols - 1] = 'AUTOMÁTICO';
+    ws.getRow(1).values = totalsRowData;
+    ws.mergeCells(1, 1, 1, nMain);
+
+    // ----- LINHA 2: CABEÇALHOS -----
+    ws.getRow(2).values = headers;
+
+    // ----- LINHAS 3+: DADOS -----
+    filteredProduction.forEach((item, idx) => {
+      const asbuiltText = computeAsbuiltFormat(item.codes);
+      ws.getRow(3 + idx).values = [
+        item.daily || '', item.pendings || '', item.date || '', item.map || '', item.location || '',
+        item.splice || '', item.name || '', item.type || '', item.typeEnd || '',
+        ...CODE_FIELDS.map((f) => item.codes?.[f.id] || ''),
+        asbuiltText
+      ];
+    });
+
+    const lastDataRow = 2 + filteredProduction.length;
+
+    // ----- CORES -----
+    const mainHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B5E20' } };
+    const codeHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF33691E' } };
+    const totalsFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB3E5FC' } };
+    const dateMapLocFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } };
+    const codeDataFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFFF' } };
+    const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
+
+    // Linha de totais
+    for (let c = 1; c <= totalCols; c++) {
+      const cell = ws.getRow(1).getCell(c);
+      cell.fill = totalsFill;
+      cell.font = { bold: true, color: { argb: 'FF0D47A1' } };
+      cell.alignment = { horizontal: c === 1 ? 'right' : 'center', vertical: 'middle' };
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    }
+
+    // Linha de cabeçalhos
+    for (let c = 1; c <= totalCols; c++) {
+      const cell = ws.getRow(2).getCell(c);
+      const isCode = c > nMain && c <= nMain + nCode;
+      cell.fill = isCode ? codeHeaderFill : mainHeaderFill;
+      cell.font = { bold: true, color: { argb: isCode ? 'FFC6E0B4' : 'FFFFFFFF' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    }
+
+    // Linhas de dados
+    for (let r = 3; r <= lastDataRow; r++) {
+      for (let c = 1; c <= totalCols; c++) {
+        const cell = ws.getRow(r).getCell(c);
+        cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        // DATE, MAP, LOCATION (colunas 3, 4, 5) em verde-claro
+        if (c >= 3 && c <= 5) cell.fill = dateMapLocFill;
+        // Colunas de códigos (bloco inteiro) em ciano, igual ao padrão da planilha
+        if (c > nMain && c <= nMain + nCode) cell.fill = codeDataFill;
+      }
+      // ASBUILT alinhado à esquerda, em negrito
+      const asbuiltCell = ws.getRow(r).getCell(totalCols);
+      asbuiltCell.alignment = { horizontal: 'left', vertical: 'middle' };
+      asbuiltCell.font = { bold: true };
+    }
+
+    // Larguras de coluna
+    ws.columns = headers.map((h, i) => ({
+      width: i < nMain ? (i === 4 ? 14 : 11) : (i < nMain + nCode ? 9 : 22)
+    }));
+
+    // Congela as duas primeiras linhas (totais + cabeçalho) e ativa o filtro
+    ws.views = [{ state: 'frozen', ySplit: 2 }];
+    ws.autoFilter = `A2:${colLetter(totalCols)}2`;
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const mapSuffix = selectedMapProd === "ALL" ? "TODOS" : selectedMapProd.replace(/\s+/g, "_");
+    link.download = `Producao_Asbuilt_${mapSuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={{ padding: "0 0 30px 0" }}>
+      {/* HEADER */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center", justifyContent: "space-between", background: C.panel, borderBottom: `1px solid ${C.border}`, padding: "14px 20px", marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+            <div style={{ fontFamily: FONT_HEAD, fontSize: 19, fontWeight: 800, color: C.accent, letterSpacing: -0.5 }}>
+              CONTROL<span style={{ color: C.text }}>PRO</span>
+            </div>
+            <div style={{ fontSize: 11, color: C.textDim }}>Gestão Interna (Salvamento Automático No Navegador)</div>
+          </div>
+
+          {/* NAVEGAÇÃO ENTRE ABAS */}
+          <div style={{ display: "flex", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, padding: 3, borderRadius: 6 }}>
+            <button
+              onClick={() => setActiveTab("DASHBOARD")}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: activeTab === "DASHBOARD" ? C.accentSoft : "transparent",
+                color: activeTab === "DASHBOARD" ? C.accent : C.textDim,
+                border: activeTab === "DASHBOARD" ? `1px solid ${C.accent}` : "1px solid transparent",
+                borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
+              }}
+            >
+              <TrendingUp size={13} /> DASHBOARD DE CONTROLE
+            </button>
+            <button
+              onClick={() => setActiveTab("PRODUCTION_LIST")}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: activeTab === "PRODUCTION_LIST" ? C.greenSoft : "transparent",
+                color: activeTab === "PRODUCTION_LIST" ? C.green : C.textDim,
+                border: activeTab === "PRODUCTION_LIST" ? `1px solid ${C.green}` : "1px solid transparent",
+                borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
+              }}
+            >
+              <List size={13} /> ABA PRODUÇÃO & CÓDIGOS AS-BUILT
+            </button>
+            <button
+              onClick={() => setActiveTab("AUTOMACAO")}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: activeTab === "AUTOMACAO" ? "rgba(179,136,255,0.12)" : "transparent",
+                color: activeTab === "AUTOMACAO" ? C.purple : C.textDim,
+                border: activeTab === "AUTOMACAO" ? `1px solid ${C.purple}` : "1px solid transparent",
+                borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
+              }}
+            >
+              <Wand2 size={13} /> AUTOMAÇÃO (MAPA)
+            </button>
+            <button
+              onClick={() => setActiveTab("FIBER_CALC")}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: activeTab === "FIBER_CALC" ? C.pinkSoft : "transparent",
+                color: activeTab === "FIBER_CALC" ? C.pink : C.textDim,
+                border: activeTab === "FIBER_CALC" ? `1px solid ${C.pink}` : "1px solid transparent",
+                borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
+              }}
+            >
+              <List size={13} /> CALCULADORA DE FIBRA
+            </button>
+          </div>
+        </div>
+
+        {/* CONTROLES */}
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {activeTab === "DASHBOARD" && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
+                <Calendar size={13} color={C.amber} />
+                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Ciclo:</span>
+                <select value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer" }}>
+                  {WEEK_OPTIONS.map((w) => (
+                    <option key={w.id} value={w.id} style={{ background: C.panel }}>{w.label} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
+                  ))}
+                  <option value="ALL" style={{ background: C.panel }}>Todos os Ciclos</option>
+                </select>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(0, 230, 118, 0.08)", border: `1px solid ${C.green}`, borderRadius: 5, padding: "4px 8px" }}>
+                <span style={{ fontSize: 10, color: C.green, fontWeight: 700, textTransform: "uppercase" }}>Semana Aberta (Ativa):</span>
+                <select value={openWeek} onChange={(e) => setOpenWeek(e.target.value)} style={{ background: "transparent", color: C.green, border: "none", fontSize: 11, outline: "none", fontWeight: 800, cursor: "pointer" }}>
+                  {WEEK_OPTIONS.map((w) => (
+                    <option key={w.id} value={w.id} style={{ background: C.panel, color: C.text }}>{w.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <button onClick={handleResetMonth} title="Arquiva os itens atuais e reinicia as Semanas 1-4 do zero (use quando virar o mês)" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                <RotateCcw size={13} /> Novo Mês (Resetar Semanas)
+              </button>
+
+              <button onClick={() => setShowArchiveModal(true)} title="Ver meses arquivados" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                <Archive size={13} /> Histórico {archives.length > 0 ? `(${archives.length})` : ""}
+              </button>
+
+              <button onClick={() => { setEditingItem(null); setModalMode("GENERAL"); setShowModal(true); }} style={{ display: "flex", alignItems: "center", gap: 6, background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                <Plus size={14} /> Novo Item
+              </button>
+            </>
+          )}
+
+          {activeTab === "PRODUCTION_LIST" && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
+                <List size={13} color={C.green} />
+                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Mapa:</span>
+                <select value={selectedMapProd} onChange={(e) => setSelectedMapProd(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer", maxWidth: 200 }}>
+                  <option value="ALL" style={{ background: C.panel }}>Todos os Mapas ({productionList.length})</option>
+                  {availableMaps.map(({ map, count }) => (
+                    <option key={map} value={map} style={{ background: C.panel }}>{map} ({count})</option>
+                  ))}
+                </select>
+              </div>
+
+              <button onClick={exportProdXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.purple, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
+                <Download size={14} /> Exportar {selectedMapProd === "ALL" ? "Tudo" : "Mapa Atual"} (.XLSX Colorido)
+              </button>
+              <button onClick={() => { setEditingProd(null); setShowProdModal(true); }} style={{ display: "flex", alignItems: "center", gap: 6, background: C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
+                <Plus size={14} /> Novo Registro de Produção
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {activeTab === "AUTOMACAO" && <AutomacaoMapaTab />}
+
+      {activeTab === "FIBER_CALC" && <FiberCalcTab />}
+
+      {activeTab === "PRODUCTION_LIST" && (
+        <div style={{ padding: "20px" }}>
+          <Panel title={`LISTA DE PRODUÇÃO COM FORMATO AUTOMÁTICO DE AS-BUILT ${selectedMapProd === "ALL" ? "— TODOS OS MAPAS" : `— MAPA ${selectedMapProd}`}`} right={
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
+              <Search size={12} color={C.textFaint} />
+              <input placeholder="Buscar na produção..." value={searchProd} onChange={(e) => setSearchProd(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 160 }} />
+            </div>
+          }>
+            <div style={{ fontSize: 10.5, color: C.textDim, lineHeight: 1.5, marginBottom: 10 }}>
+              💡 Clique em <strong style={{ color: C.accent }}>"Copiar"</strong> na coluna ASBUILT (GERADO) e depois vá na aba <strong style={{ color: C.purple }}>Automação</strong>, clique em "Adicionar Caixa Manual", clique no ponto do mapa e cole (Ctrl+V) — sem precisar de IA nem chave de API.
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
+                <thead>
+                  {/* TOTAIS DO CÓDIGO NO TOPO */}
+                  <tr style={{ background: "rgba(0, 212, 255, 0.15)", color: C.accent, fontWeight: 800, textAlign: "center" }}>
+                    <td colSpan="9" style={{ padding: "8px", textAlign: "right", letterSpacing: 1 }}>
+                      TOTAIS {selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`} --&gt;
+                    </td>
+                    {CODE_FIELDS.map(f => (
+                      <td key={f.id} style={{ padding: "8px", border: `1px solid ${C.border2}`, color: C.amber }}>
+                        {codeTotals[f.id] || 0}
+                      </td>
+                    ))}
+                    <td style={{ padding: "8px", background: C.panel2, color: C.textDim, fontSize: 10 }}>AUTOMÁTICO</td>
+                    <td style={{ padding: "8px", background: C.panel2 }}></td>
+                  </tr>
+
+                  {/* CABEÇALHOS */}
+                  <tr style={{ background: C.panel2, color: C.text, textAlign: "center", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 10, fontWeight: 700 }}>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DAILY</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>MAP</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>LOCATION</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>SPLICE</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>NAME</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>TYPE</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>TYPE</th>
+
+                    {CODE_FIELDS.map(f => (
+                      <th key={f.id} style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#2e3b1b", color: "#a2e048", minWidth: 45 }}>
+                        {f.label}
+                      </th>
+                    ))}
+
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#182a3a", color: C.accent, fontWeight: 800 }}>
+                      ASBUILT (GERADO)
+                    </th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>AÇÕES</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredProduction.map((item) => {
+                    const asbuiltText = computeAsbuiltFormat(item.codes);
+                    return (
+                      <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}`, textAlign: "center" }}>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.daily || '—'}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.amber, fontWeight: 700 }}>{item.pendings || '—'}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700 }}>{item.date}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text }}>{item.map}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.location}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700 }}>{item.splice}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.accent }}>{item.name}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.type}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.typeEnd}</td>
+
+                        {CODE_FIELDS.map(f => (
+                          <td key={f.id} style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: item.codes?.[f.id] ? C.green : C.textFaint, fontWeight: item.codes?.[f.id] ? 700 : 400 }}>
+                            {item.codes?.[f.id] || ''}
+                          </td>
+                        ))}
+
+                        <td style={{ padding: "6px 12px", border: `1px solid ${C.border2}`, background: "rgba(0, 212, 255, 0.05)", color: C.accent, fontWeight: 800, textAlign: "left" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
+                            <span>{asbuiltText || <span style={{ color: C.textFaint, fontWeight: 400 }}>—</span>}</span>
+                            {asbuiltText && (
+                              <button
+                                onClick={() => copyProdToClipboard(item)}
+                                title="Copiar texto pronto (local + splice + códigos) para colar na Automação"
+                                style={{
+                                  display: "flex", alignItems: "center", gap: 4, flexShrink: 0,
+                                  background: copiedRowId === item.id ? C.green : C.panel2,
+                                  color: copiedRowId === item.id ? "#000" : C.textDim,
+                                  border: `1px solid ${copiedRowId === item.id ? C.green : C.border2}`,
+                                  borderRadius: 4, padding: "3px 7px", fontSize: 9.5, fontWeight: 700, cursor: "pointer"
+                                }}
+                              >
+                                <Copy size={10} /> {copiedRowId === item.id ? "Copiado!" : "Copiar"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
+                          <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+                            <Edit2 size={13} color={C.textDim} style={{ cursor: "pointer" }} onClick={() => { setEditingProd(item); setShowProdModal(true); }} />
+                            <Trash2 size={13} color={C.textDim} style={{ cursor: "pointer" }} onClick={() => handleDeleteProd(item.id)} />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          {showProdModal && (
+            <ProductionModal
+              initial={editingProd}
+              onClose={() => { setShowProdModal(false); setEditingProd(null); }}
+              onSave={handleSaveProd}
+            />
+          )}
+        </div>
+      )}
+
+      {activeTab === "DASHBOARD" && (
+      <div style={{ padding: "0 20px" }}>
+        
+        {/* SEÇÃO DESEMPENHO (ABAS) */}
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.textDim, textTransform: "uppercase", letterSpacing: 1.5 }}>
+              DESEMPENHO
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={copyStatusText} style={{ display: "flex", alignItems: "center", gap: 6, background: statusFeedback === "texto" ? C.green : C.panel2, color: statusFeedback === "texto" ? "#000" : C.textDim, border: `1px solid ${statusFeedback === "texto" ? C.green : C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                <Copy size={12} /> {statusFeedback === "texto" ? "Copiado! Cole no WhatsApp" : "Copiar Texto do Status"}
+              </button>
+              <button onClick={captureStatusImage} style={{ display: "flex", alignItems: "center", gap: 6, background: statusFeedback === "imagem" ? C.green : C.panel2, color: statusFeedback === "imagem" ? "#000" : C.textDim, border: `1px solid ${statusFeedback === "imagem" ? C.green : C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                <Download size={12} /> {statusFeedback === "imagem" ? "Pronto!" : "Gerar Print do Status"}
+              </button>
+            </div>
+          </div>
+
+          <div ref={statusCaptureRef} style={{ background: "#0b0f16", padding: 10, borderRadius: 8 }}>
+
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            {[
+              { id: "PRODUCAO_SEMANA", label: "PRODUÇÃO DA SEMANA", icon: <TrendingUp size={13} /> },
+              { id: "COLABORADOR", label: "DESEMPENHO COLABORADOR", icon: <Users size={13} /> },
+              { id: "ATRASO_ATUALIZACAO", label: "ATRASO NAS ATUALIZAÇÕES", icon: <Clock size={13} /> }
+            ].map(tab => {
+              const active = perfTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setPerfTab(tab.id)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    background: active ? C.accentSoft : C.panel2,
+                    color: active ? C.accent : C.textDim,
+                    border: active ? `1.5px solid ${C.accent}` : `1px solid ${C.border2}`,
+                    boxShadow: active ? `0 0 10px rgba(0, 212, 255, 0.2)` : "none",
+                    borderRadius: 6,
+                    padding: "8px 16px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    letterSpacing: 0.8,
+                    cursor: "pointer",
+                    transition: "all 0.2s ease-in-out"
+                  }}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* PAINÉIS */}
+          {perfTab === "PRODUCAO_SEMANA" && (
+            <Panel title="Indicadores de Produção da Semana (Ciclo Ativo)">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20, alignItems: "center" }}>
+                <div>
+                  <StatRow label="Taxa de Conclusão Mestra" value={`${kpis.rate}%`} valueColor={C.accent} />
+                  <div style={{ height: 10, background: C.panel2, borderRadius: 5, overflow: "hidden", marginTop: 8, border: `1px solid ${C.border2}` }}>
+                    <div style={{ width: `${kpis.rate}%`, height: "100%", background: C.accent, transition: "width 0.4s ease" }} />
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, background: C.panel2, padding: 12, borderRadius: 6, border: `1px solid ${C.border2}` }}>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: C.textDim, textTransform: "uppercase" }}>Total de Mapas</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: C.text }}>{kpis.total}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: C.textDim, textTransform: "uppercase" }}>Finalizados</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{kpis.ok}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9.5, color: C.textDim, textTransform: "uppercase" }}>Em Andamento</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: C.amber }}>{kpis.pending}</div>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          )}
+
+          {perfTab === "COLABORADOR" && (
+            <Panel title="Pontuação de Produtividade (Cada Etapa Atualizada = +1 Ponto)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+                {perfCollaborators.length > 0 ? perfCollaborators.map(c => (
+                  <div key={c.name} style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: C.accent }}>{c.name}</div>
+                      <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 8px", borderRadius: 12, fontWeight: 800, fontSize: 11 }}>
+                        +{c.updatesCount} PTS
+                      </span>
+                    </div>
+
+                    <StatRow label="Atualizações Concluídas" value={c.updatesCount} valueColor={C.green} />
+                    
+                    <div style={{ margin: "8px 0", borderTop: `1px dashed ${C.border2}`, paddingTop: 6 }}>
+                      <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>Detalhamento por Etapa:</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.text }}>
+                        <span>As-Built: <strong style={{ color: C.accent }}>{c.asbuiltCount}</strong></span>
+                        <span>Workbook: <strong style={{ color: C.purple }}>{c.workbookCount}</strong></span>
+                        <span>Invoice: <strong style={{ color: C.green }}>{c.invoiceCount}</strong></span>
+                      </div>
+                    </div>
+
+                    {c.pendingOts > 0 && (
+                      <StatRow label="OTs Pendentes Atribuídas" value={c.pendingOts} valueColor={C.red} />
+                    )}
+                  </div>
+                )) : (
+                  <div style={{ color: C.textDim, fontSize: 11 }}>Nenhum colaborador com atualizações registradas neste ciclo.</div>
+                )}
+              </div>
+            </Panel>
+          )}
+
+          {perfTab === "ATRASO_ATUALIZACAO" && (
+            <Panel title="Monitor de Atrasos e Estagnação de Atualizações">
+              {delayedItems.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {delayedItems.map(item => (
+                    <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: C.panel2, border: `1px solid ${C.border2}`, padding: "8px 12px", borderRadius: 4 }}>
+                      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                        <AlertTriangle size={14} color={C.red} />
+                        <div>
+                          <span style={{ fontWeight: 700, color: C.text }}>{item.map}</span>
+                          <span style={{ fontSize: 10, color: C.textDim, marginLeft: 10 }}>Entrega esperada: <strong style={{ color: C.purple }}>{item.deliveryDay}</strong></span>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                        {item.otCount > 0 && <span style={{ color: C.red, fontWeight: 700 }}>{item.otCount} OTs Retidas</span>}
+                        {statusBadge(item.status)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>Excelente! Nenhuma atualização pendente ou em atraso.</div>
+              )}
+            </Panel>
+          )}
+
+        {/* KPIS DE RESUMO DA OPERAÇÃO */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18, marginTop: 18 }}>
+          <Panel title="Total OTs Pendentes no Ciclo" icon={<AlertTriangle size={13} color={C.red} />}>
+            <StatRow label="OTs a Fazer" value={kpis.totalOTs} valueColor={kpis.totalOTs > 0 ? C.red : C.green} />
+            <StatRow label="Prioridade Máxima" value={filteredAndSorted[0]?.otCount > 0 ? `${filteredAndSorted[0].map} (${filteredAndSorted[0].otCount} OTs)` : "Nenhuma"} valueColor={C.amber} />
+          </Panel>
+          <Panel title="Status As-Built" icon={<CheckCircle size={13} color={C.green} />}>
+            <StatRow label="Prontos no Ciclo" value={kpis.ok} valueColor={C.green} />
+            <StatRow label="Pendentes / Revisão" value={kpis.pending} valueColor={kpis.pending > 0 ? C.red : C.textDim} />
+          </Panel>
+          <Panel title="Validação Invoices" icon={<FileSpreadsheet size={13} color={C.green} />}>
+            <StatRow label="Invoices Atualizadas" value={`${kpis.invoiceUpdated} / ${kpis.total}`} valueColor={C.green} />
+            <StatRow label="Invoices Pendentes" value={kpis.total - kpis.invoiceUpdated} valueColor={C.amber} />
+          </Panel>
+          <Panel title="Validação Workbooks" icon={<FileSpreadsheet size={13} color={C.purple} />}>
+            <StatRow label="Workbooks Atualizados" value={`${kpis.workbookUpdated} / ${kpis.total}`} valueColor={C.purple} />
+            <StatRow label="Workbooks Pendentes" value={kpis.total - kpis.workbookUpdated} valueColor={C.amber} />
+          </Panel>
+        </div>
+        </div>
+        </div>
+
+        {/* TABELA 1: PRIORIDADE DA FILA */}
+        <Panel title="PRIORIDADE DA FILA (ORDENADO POR MAIOR QTD DE OTS PENDENTES)" style={{ marginBottom: 18 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ color: C.textDim, textAlign: "left", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 9.5, letterSpacing: 0.8 }}>
+                  <th style={{ padding: "8px 6px" }}>PRIORIDADE / OTS</th>
+                  <th style={{ padding: "8px 6px" }}>MAPA / CÓDIGO</th>
+                  <th style={{ padding: "8px 6px" }}>TRABALHO AS-BUILT</th>
+                  <th style={{ padding: "8px 6px" }}>TRABALHO INVOICE</th>
+                  <th style={{ padding: "8px 6px" }}>TRABALHO WORKBOOK</th>
+                  <th style={{ padding: "8px 6px", textAlign: "right" }}>AÇÃO / ATUALIZAR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {otQueueItems.length > 0 ? otQueueItems.map((item, idx) => (
+                  <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+                    <td style={{ padding: "8px 6px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ color: C.textDim, fontWeight: 700, fontSize: 10 }}>#{idx + 1}</span>
+                        <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 12, fontWeight: 800, fontSize: 10 }}>
+                          {item.otCount} OTs PENDENTES
+                        </span>
+                      </div>
+                    </td>
+                    <td style={{ padding: "8px 6px", fontWeight: 700, color: C.text }}>{item.map}</td>
+                    <td style={{ padding: "8px 6px" }}><StageBadge status={item.asbuiltStatus} tech={item.asbuiltTech} date={item.asbuiltDate} /></td>
+                    <td style={{ padding: "8px 6px" }}><StageBadge status={item.invoiceStatus} tech={item.invoiceTech} date={item.invoiceDate} /></td>
+                    <td style={{ padding: "8px 6px" }}><StageBadge status={item.workbookStatus} tech={item.workbookTech} date={item.workbookDate} /></td>
+                    <td style={{ padding: "8px 6px", textAlign: "right" }}>
+                      <button onClick={() => { setEditingItem(item); setModalMode("QUEUE"); setShowModal(true); }} style={{ background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 4, padding: "4px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <Edit2 size={11} /> Atualizar Item
+                      </button>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan="6" style={{ padding: 12, textAlign: "center", color: C.green }}>Nenhum mapa com OTs pendentes na fila!</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+
+        {/* TABELA 2: CONTROLE GERAL */}
+        <Panel
+          title="CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO"
+          right={
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 10px" }}>
+              <Search size={12} color={C.textFaint} />
+              <input placeholder="Buscar por mapa, técnico..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 180 }} />
+            </div>
+          }
+        >
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ color: C.textDim, textAlign: "left", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 9.5, letterSpacing: 0.8 }}>
+                  <th style={{ padding: "8px 6px" }}>ENTREGA</th>
+                  <th style={{ padding: "8px 6px" }}>MAPA / CÓDIGO</th>
+                  <th style={{ padding: "8px 6px" }}>OTS PENDENTES</th>
+                  <th style={{ padding: "8px 6px" }}>CICLO (SÁB-SEX)</th>
+                  <th style={{ padding: "8px 6px" }}>AS-BUILT</th>
+                  <th style={{ padding: "8px 6px" }}>INVOICE</th>
+                  <th style={{ padding: "8px 6px" }}>WORKBOOK</th>
+                  <th style={{ padding: "8px 6px" }}>STATUS GERAL</th>
+                  <th style={{ padding: "8px 6px" }}>OBSERVAÇÕES</th>
+                  <th style={{ padding: "8px 6px", textAlign: "center" }}>AÇÕES</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredAndSorted.map((item) => (
+                  <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+                    <td style={{ padding: "8px 6px" }}>
+                      <span style={{ color: item.deliveryDay === "QUINTA" ? C.accent : C.purple, fontWeight: 700, fontSize: 10 }}>{item.deliveryDay}</span>
+                    </td>
+                    <td style={{ padding: "8px 6px", fontWeight: 700, color: C.text }}>{item.map}</td>
+                    <td style={{ padding: "8px 6px" }}>
+                      {item.otCount > 0 ? (
+                        <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontWeight: 800, fontSize: 10 }}>{item.otCount} OT(s)</span>
+                      ) : <span style={{ color: C.textFaint, fontSize: 10 }}>0 (Zerado)</span>}
+                    </td>
+
+                    <td style={{ padding: "8px 6px" }}>
+                      <WeeklyActivityHeatmap
+                        asbuiltDate={item.asbuiltDate}
+                        workbookDate={item.workbookDate}
+                        invoiceDate={item.invoiceDate}
+                      />
+                    </td>
+
+                    <td style={{ padding: "8px 6px" }}>
+                      <StageBadge status={item.asbuiltStatus} tech={item.asbuiltTech} date={item.asbuiltDate} />
+                    </td>
+                    <td style={{ padding: "8px 6px" }}>
+                      <StageBadge status={item.invoiceStatus} tech={item.invoiceTech} date={item.invoiceDate} />
+                    </td>
+                    <td style={{ padding: "8px 6px" }}>
+                      <StageBadge status={item.workbookStatus} tech={item.workbookTech} date={item.workbookDate} />
+                    </td>
+                    <td style={{ padding: "8px 6px" }}>{statusBadge(item.status)}</td>
+                    <td style={{ padding: "8px 6px", fontSize: 10, color: C.textDim }}>{item.note || "—"}</td>
+                    <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                      <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+                        <Edit2 size={13} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => { setEditingItem(item); setModalMode("GENERAL"); setShowModal(true); }} />
+                        <Trash2 size={13} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => handleDeleteItem(item.id)} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      </div>
+      )}
+
+      {/* MODAL */}
+      {showModal && (
+        <ItemModal
+          initial={editingItem}
+          mode={modalMode}
+          openWeek={openWeek}
+          onClose={() => { setShowModal(false); setEditingItem(null); }}
+          onSave={handleSaveItem}
+        />
+      )}
+
+      {/* MODAL DE HISTÓRICO / ARQUIVO MENSAL */}
+      {showArchiveModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+          <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 560, maxHeight: "85vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+              <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent, display: "flex", alignItems: "center", gap: 8 }}>
+                <Archive size={16} /> Histórico de Meses Arquivados
+              </div>
+              <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => setShowArchiveModal(false)} />
+            </div>
+            <div style={{ fontSize: 10, color: C.textDim, marginBottom: 14, lineHeight: 1.5 }}>
+              Toda vez que você clica em "Novo Mês (Resetar Semanas)", os itens atuais são guardados aqui antes de a lista ser zerada. Nada se perde.
+            </div>
+
+            {archives.length === 0 ? (
+              <div style={{ textAlign: "center", color: C.textFaint, fontSize: 11, padding: 24 }}>Nenhum mês arquivado ainda.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {archives.map((arch) => (
+                  <div key={arch.id} style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 800, color: C.text, fontSize: 12.5 }}>{arch.label}</div>
+                      <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 2 }}>
+                        Arquivado em {new Date(arch.archivedAt).toLocaleDateString('pt-BR')} · {arch.projects.length} item(ns)
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => handleRestoreArchive(arch.id)} title="Restaurar este mês para a lista ativa" style={{ display: "flex", alignItems: "center", gap: 4, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 4, padding: "5px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                        <RotateCcw size={11} /> Restaurar
+                      </button>
+                      <Trash2 size={13} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => handleDeleteArchive(arch.id)} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
+              <button onClick={() => setShowArchiveModal(false)} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProductionModal({ initial, onClose, onSave }) {
+  const [form, setForm] = useState(() => initial || {
+    daily: "",
+    pendings: "NO HUNG",
+    date: new Date().toISOString().slice(0, 10),
+    map: "",
+    location: "",
+    splice: "",
+    name: "",
+    type: "AERIAL",
+    typeEnd: "END",
+    codes: { US01: '', FS01: '', FS02: '', FS03: '', FS07A: '', FS08: '', FS16: '', FS04: '', MC01: '' }
+  });
+
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const setCode = (codeId) => (e) => {
+    const val = e.target.value;
+    setForm(f => ({ ...f, codes: { ...f.codes, [codeId]: val } }));
+  };
+
+  const generatedPreview = computeAsbuiltFormat(form.codes);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}>
+      <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 700, maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+          <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.green }}>
+            {initial ? `Editar Produção: ${initial.map} - ${initial.location}` : "Adicionar Novo Item de Produção"}
+          </div>
+          <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+          <Field label="Pendings"><Input value={form.pendings} onChange={set("pendings")} /></Field>
+          <Field label="Data"><Input type="date" value={form.date} onChange={set("date")} /></Field>
+          <Field label="Map / Código"><Input value={form.map} onChange={set("map")} placeholder="Ex: GT057E" /></Field>
+          <Field label="Location"><Input value={form.location} onChange={set("location")} placeholder="Ex: SE 025" /></Field>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+          <Field label="Splice"><Input value={form.splice} onChange={set("splice")} placeholder="Ex: 48" /></Field>
+          <Field label="Técnico / Name"><Input value={form.name} onChange={set("name")} placeholder="Ex: ROBSON" /></Field>
+          <Field label="Type"><Input value={form.type} onChange={set("type")} placeholder="Ex: AERIAL" /></Field>
+          <Field label="Type End"><Input value={form.typeEnd} onChange={set("typeEnd")} placeholder="Ex: END" /></Field>
+        </div>
+
+        <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 14, borderRadius: 6, marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, color: C.amber, fontSize: 11, marginBottom: 10, textTransform: "uppercase" }}>
+            CÓDIGOS & QUANTIDADES
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
+            {CODE_FIELDS.map(f => (
+              <Field key={f.id} label={f.label}>
+                <Input type="number" placeholder="0" value={form.codes?.[f.id] || ''} onChange={setCode(f.id)} />
+              </Field>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ background: "rgba(0, 212, 255, 0.08)", border: `1px solid ${C.accent}`, padding: 12, borderRadius: 6, marginBottom: 16 }}>
+          <div style={{ fontSize: 9.5, color: C.textDim, textTransform: "uppercase", marginBottom: 4 }}>
+            Resultado Formatado Automaticamente para a coluna ASBUILT:
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: C.accent }}>
+            {generatedPreview || <span style={{ color: C.textFaint, fontSize: 12 }}>(Preencha as quantidades dos códigos)</span>}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={() => onSave(form)} style={{ background: C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Salvar Registro</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [addOtInput, setAddOtInput] = useState("");
+  const isQueueMode = mode === "QUEUE";
+
+  const [form, setForm] = useState(() => initial || {
+    deliveryDay: "QUINTA",
+    cycle: openWeek || "SEMANA_1",
+    map: "",
+    status: "NO_UPDATE",
+    otCount: 0,
+    asbuiltStatus: "PENDENTE",
+    asbuiltDate: "",
+    asbuiltTech: "",
+    invoiceStatus: "PENDENTE",
+    invoiceDate: "",
+    invoiceTech: "",
+    workbookStatus: "PENDENTE",
+    workbookDate: "",
+    workbookTech: "",
+    note: ""
+  });
+
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const handleAddOt = () => {
+    const qty = parseInt(addOtInput, 10);
+    if (!qty || isNaN(qty) || qty <= 0) return;
+    setForm(f => ({ ...f, otCount: (Number(f.otCount) || 0) + qty }));
+    setAddOtInput("");
+  };
+
+  const handleAsBuiltStatusChange = (e) => {
+    const val = e.target.value;
+    setForm(f => ({
+      ...f,
+      asbuiltStatus: val,
+      asbuiltDate: (val === "OK" || val === "FAZENDO") && !f.asbuiltDate ? today : f.asbuiltDate,
+      // OTs pendentes só zeram quando marcado como ATUALIZADO (OK) — "FAZENDO" mantém a fila.
+      otCount: val === "OK" ? 0 : f.otCount
+    }));
+  };
+
+  const handleWorkbookStatusChange = (e) => {
+    const val = e.target.value;
+    setForm(f => ({ 
+      ...f, 
+      workbookStatus: val, 
+      workbookDate: val === "SIM" && !f.workbookDate ? today : f.workbookDate 
+    }));
+  };
+
+  const handleInvoiceStatusChange = (e) => {
+    const val = e.target.value;
+    setForm(f => ({ 
+      ...f, 
+      invoiceStatus: val, 
+      invoiceDate: val === "SIM" && !f.invoiceDate ? today : f.invoiceDate 
+    }));
+  };
+
+  // ===== MODO "FILA DE PRIORIDADE": modal enxuto, só para atualização diária do AS-BUILT =====
+  if (isQueueMode) {
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+        <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 420, maxHeight: "90vh", overflowY: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+            <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>Atualizar AS-BUILT: {form.map}</div>
+            <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />
+          </div>
+          <div style={{ fontSize: 10, color: C.textDim, marginBottom: 14, lineHeight: 1.5 }}>
+            Marque <strong style={{ color: C.amber }}>FAZENDO</strong> assim que começar (assim ninguém mais pega esse mapa), e <strong style={{ color: C.green }}>ATUALIZADO</strong> quando terminar. As OTs pendentes só somem quando marcar ATUALIZADO.
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,82,82,0.08)", border: `1px solid ${C.red}`, padding: "8px 12px", borderRadius: 6, marginBottom: 14 }}>
+            <span style={{ fontSize: 10.5, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>OTs Pendentes</span>
+            <span style={{ fontSize: 16, fontWeight: 800, color: C.red }}>{form.otCount}</span>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <Field label="Status AS-BUILT">
+              <select value={form.asbuiltStatus} onChange={handleAsBuiltStatusChange} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
+                <option value="PENDENTE">PENDENTE</option>
+                <option value="FAZENDO">FAZENDO (Em Andamento)</option>
+                <option value="OK">ATUALIZADO (OK)</option>
+              </select>
+            </Field>
+            <Field label="Seu Nome (Técnico)"><Input placeholder="Nome de quem está atualizando..." value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
+            <Field label="Data"><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
+            <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
+            <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Salvar Atualização</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== MODO "GERAL": cadastro/edição do item (sem edição de AS-BUILT — isso é feito só pela Fila de Prioridade) =====
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+      <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 620, maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+          <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>
+            {initial ? `Editar Item: ${initial.map}` : "Cadastrar Novo Item Manual"}
+          </div>
+          <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+          <Field label="Dia de Entrega"><Input placeholder="Ex: QUINTA" value={form.deliveryDay} onChange={set("deliveryDay")} /></Field>
+          <Field label="Mapa / Código"><Input placeholder="Ex: AL-LE45E" value={form.map} onChange={set("map")} /></Field>
+          <Field label="Atribuir à Semana">
+            <select value={form.cycle} onChange={set("cycle")} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
+              {WEEK_OPTIONS.map((w) => (
+                <option key={w.id} value={w.id}>{w.label} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <div style={{ background: "rgba(255,82,82,0.08)", border: `1px solid ${C.red}`, padding: 12, borderRadius: 6, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ color: C.red, fontWeight: 700, fontSize: 10, textTransform: "uppercase" }}>⚡ Priorização de OTs (Novas Demandas)</span>
+            <span style={{ fontSize: 11, fontWeight: 800, color: C.text }}>Saldo Total Pendente: <span style={{ color: C.red, fontSize: 14 }}>{form.otCount} OTs</span></span>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}><Field label="Adicionar OTs Criadas"><Input type="number" placeholder="Ex: 5" value={addOtInput} onChange={(e) => setAddOtInput(e.target.value)} /></Field></div>
+            <button onClick={handleAddOt} type="button" style={{ background: C.red, color: "#fff", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", height: 32 }}>+ Somar OTs</button>
+          </div>
+        </div>
+
+        {initial && (
+          <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, color: C.accent, fontSize: 10, marginBottom: 6, textTransform: "uppercase" }}>Status AS-BUILT Atual</div>
+              <StageBadge status={form.asbuiltStatus} tech={form.asbuiltTech} date={form.asbuiltDate} />
+            </div>
+            <div style={{ fontSize: 9.5, color: C.textFaint, maxWidth: 280, lineHeight: 1.5, textAlign: "right" }}>
+              O AS-BUILT só é atualizado pelo botão "Atualizar Item" na <strong style={{ color: C.textDim }}>Fila de Prioridade</strong> — isso garante que as atualizações diárias contem pontos para o colaborador certo.
+            </div>
+          </div>
+        )}
+
+        <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, color: C.purple, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>ETAPA WORKBOOK</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
+            <Field label="Status Workbook">
+              <select value={form.workbookStatus} onChange={handleWorkbookStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
+                <option value="SIM">SIM (ATUALIZADO)</option>
+                <option value="PENDENTE">NÃO / PENDENTE</option>
+              </select>
+            </Field>
+            <Field label="Data Atualização Workbook"><Input type="date" value={form.workbookDate} onChange={set("workbookDate")} /></Field>
+            <Field label="Técnico Workbook"><Input placeholder="Nome do técnico..." value={form.workbookTech} onChange={set("workbookTech")} /></Field>
+          </div>
+        </div>
+
+        <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, color: C.green, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>ETAPA INVOICE</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
+            <Field label="Status Invoice">
+              <select value={form.invoiceStatus} onChange={handleInvoiceStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
+                <option value="SIM">SIM (ATUALIZADO)</option>
+                <option value="PENDENTE">NÃO / PENDENTE</option>
+              </select>
+            </Field>
+            <Field label="Data Atualização Invoice"><Input type="date" value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
+            <Field label="Técnico Invoice"><Input placeholder="Nome do técnico..." value={form.invoiceTech} onChange={set("invoiceTech")} /></Field>
+          </div>
+        </div>
+
+        <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, color: C.textDim, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>Histórico do Ciclo (Sáb - Sex)</div>
+            <WeeklyActivityHeatmap
+                asbuiltDate={form.asbuiltDate}
+                workbookDate={form.workbookDate}
+                invoiceDate={form.invoiceDate}
+            />
+        </div>
+
+        <Field label="Observações / Detalhes"><Input placeholder="Observações adicionais..." value={form.note} onChange={set("note")} /></Field>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
+          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Salvar Produção</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<PasswordGate><ProductionDashboard /></PasswordGate>);
+</script>
+</body>
+</html>
