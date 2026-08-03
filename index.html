@@ -117,7 +117,7 @@ function useCloudSync(key, deps, getValue, applyRemote) {
 }
 
 // ===== TELA DE SENHA COMPARTILHADA DA EQUIPE =====
-const TEAM_PASSWORD = '010203'; // <- troque aqui pela senha combinada com a equipe
+const TEAM_PASSWORD = '010203';
 const AUTH_STORAGE_KEY = 'CONTROL_PRO_AUTH_OK_V1';
 
 function PasswordGate({ children }) {
@@ -397,13 +397,16 @@ function WeeklyActivityHeatmap({ asbuiltDate, workbookDate, invoiceDate }) {
                     let bgColor = C.panel2;
                     let border = `1px solid ${C.border2}`;
 
-                    if (index === updatedDayIdx) {
+                    // Fica azul no dia da atualização E no dia seguinte (folga de 1 dia antes de
+                    // voltar a contar como "sem atualização" / transparente).
+                    const isUpdated = updatedDayIdx !== -1 && (index === updatedDayIdx || index === updatedDayIdx + 1);
+                    if (isUpdated) {
                         bgColor = color;
                         border = `1px solid ${color}`;
                     }
 
                     return (
-                        <div key={day} title={`${title}: ${day}${index === updatedDayIdx ? ' (Atualizado)' : ''}`} style={{ width: 10, height: 10, background: bgColor, border: border, borderRadius: 2 }} />
+                        <div key={day} title={`${title}: ${day}${isUpdated ? ' (Atualizado)' : ''}`} style={{ width: 10, height: 10, background: bgColor, border: border, borderRadius: 2 }} />
                     );
                 })}
             </div>
@@ -2109,13 +2112,22 @@ function ProductionDashboard() {
   };
 
   const handleSaveItem = (item) => {
-    const isFullyDone = item.asbuiltStatus === "OK" && item.invoiceStatus === "SIM" && item.workbookStatus === "SIM";
-    
+    const submittedOtCount = Number(item.otCount || 0);
+
+    // Se surgiram OTs novas (ex: chegaram mais demandas depois do AS-BUILT já ter sido
+    // marcado como "Atualizado" hoje), isso significa que o AS-BUILT atual não cobre mais
+    // o mapa inteiro — então volta o status pra PENDENTE automaticamente, pra reentrar na
+    // Fila de Prioridade, em vez de simplesmente descartar as OTs que acabaram de ser somadas.
+    const asbuiltStatus = (submittedOtCount > 0 && item.asbuiltStatus === "OK") ? "PENDENTE" : item.asbuiltStatus;
+
+    const isFullyDone = asbuiltStatus === "OK" && item.invoiceStatus === "SIM" && item.workbookStatus === "SIM";
+
     const finalItem = {
       ...item,
+      asbuiltStatus,
       cycle: item.cycle || "SEMANA_1",
       status: isFullyDone ? "OK" : (item.status || "NO_UPDATE"),
-      otCount: item.asbuiltStatus === "OK" ? 0 : Number(item.otCount || 0)
+      otCount: submittedOtCount
     };
 
     if (finalItem.id) {
