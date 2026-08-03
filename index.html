@@ -117,7 +117,7 @@ function useCloudSync(key, deps, getValue, applyRemote) {
 }
 
 // ===== TELA DE SENHA COMPARTILHADA DA EQUIPE =====
-const TEAM_PASSWORD = '010203'; // <- 
+const TEAM_PASSWORD = '010203'; // <- troque aqui pela senha combinada com a equipe
 const AUTH_STORAGE_KEY = 'CONTROL_PRO_AUTH_OK_V1';
 
 function PasswordGate({ children }) {
@@ -217,6 +217,8 @@ const STORAGE_KEY_ARCHIVE = 'CONTROL_PRO_MONTH_ARCHIVE_V1';
 
 // ===== ABA PRODUÇÃO & CÓDIGOS AS-BUILT =====
 const STORAGE_KEY_PRODUCTION = 'CONTROL_PRO_PRODUCTION_V1';
+const STORAGE_KEY_INVOICE_PRICES = 'CONTROL_PRO_INVOICE_PRICES_V1';
+const STORAGE_KEY_PENDINGS = 'CONTROL_PRO_PENDINGS_BY_MAP_V1';
 
 // Códigos Padrão de As-Built
 const CODE_FIELDS = [
@@ -224,10 +226,12 @@ const CODE_FIELDS = [
   { id: 'FS01', label: 'FS01' },
   { id: 'FS02', label: 'FS02' },
   { id: 'FS03', label: 'FS03' },
+  { id: 'FS14', label: 'FS14' },
   { id: 'FS07A', label: 'FS07A' },
   { id: 'FS08', label: 'FS08' },
   { id: 'FS16', label: 'FS16' },
   { id: 'FS04', label: 'FS04' },
+  { id: 'AS24', label: 'AS24' },
   { id: 'MC01', label: 'MC01' }
 ];
 
@@ -477,6 +481,429 @@ function parseFiberCount(text) {
     return Math.abs(b - a) + 1;
   }
   return 1;
+}
+
+// ===== ABA PENDINGS (POR MAPA) =====
+function uid(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function padNumber(n, width) {
+  const s = String(n);
+  return s.length >= width ? s : '0'.repeat(width - s.length) + s;
+}
+
+function defaultPendingsGroups() {
+  return [
+    { id: uid('g'), prefix: 'FT', items: [] },
+    { id: uid('g'), prefix: 'SE', items: [] },
+    { id: uid('g'), prefix: 'S', items: [] }
+  ];
+}
+
+function defaultPendingsMap(mapName) {
+  return {
+    title: `MAP ${mapName} UPDATE WORK`,
+    groups: defaultPendingsGroups(),
+    locations: []
+  };
+}
+
+function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
+  const mapKeys = useMemo(() => Object.keys(pendingsByMap).sort(), [pendingsByMap]);
+  const [selectedMap, setSelectedMap] = useState(mapKeys[0] || "");
+
+  useEffect(() => {
+    if (!selectedMap && mapKeys.length > 0) setSelectedMap(mapKeys[0]);
+    if (selectedMap && !mapKeys.includes(selectedMap) && mapKeys.length > 0) setSelectedMap(mapKeys[0]);
+  }, [mapKeys]);
+
+  const data = pendingsByMap[selectedMap];
+
+  const updateMapData = (patchFn) => {
+    setPendingsByMap(prev => ({ ...prev, [selectedMap]: patchFn(prev[selectedMap]) }));
+  };
+
+  const createNewMap = () => {
+    const name = (prompt('Nome do mapa (ex: LE18E):') || '').trim().toUpperCase();
+    if (!name) return;
+    if (pendingsByMap[name]) { setSelectedMap(name); return; }
+    setPendingsByMap(prev => ({ ...prev, [name]: defaultPendingsMap(name) }));
+    setSelectedMap(name);
+  };
+
+  const deleteCurrentMap = () => {
+    if (!selectedMap) return;
+    if (!confirm(`Apagar toda a lista de pendings do mapa ${selectedMap}? Essa ação não pode ser desfeita.`)) return;
+    setPendingsByMap(prev => {
+      const next = { ...prev };
+      delete next[selectedMap];
+      return next;
+    });
+    setSelectedMap("");
+  };
+
+  const setTitle = (title) => updateMapData(m => ({ ...m, title }));
+
+  const addGroup = () => {
+    const prefix = (prompt('Prefixo do novo grupo (ex: FT, SE, S, PP...):') || '').trim().toUpperCase();
+    if (!prefix) return;
+    updateMapData(m => ({ ...m, groups: [...m.groups, { id: uid('g'), prefix, items: [] }] }));
+  };
+
+  const renameGroup = (groupId) => {
+    const group = data.groups.find(g => g.id === groupId);
+    const prefix = (prompt('Novo prefixo do grupo:', group?.prefix || '') || '').trim().toUpperCase();
+    if (!prefix) return;
+    updateMapData(m => ({ ...m, groups: m.groups.map(g => g.id === groupId ? { ...g, prefix } : g) }));
+  };
+
+  const deleteGroup = (groupId) => {
+    if (!confirm('Apagar esse grupo inteiro e todos os itens dele?')) return;
+    updateMapData(m => ({ ...m, groups: m.groups.filter(g => g.id !== groupId) }));
+  };
+
+  const addSingleItem = (groupId) => {
+    const group = data.groups.find(g => g.id === groupId);
+    const nextNum = (group?.items.length || 0) + 1;
+    const suggestion = `${group.prefix} ${padNumber(nextNum, 3)}`;
+    const code = (prompt('Código do item:', suggestion) || '').trim();
+    if (!code) return;
+    updateMapData(m => ({
+      ...m,
+      groups: m.groups.map(g => g.id === groupId ? { ...g, items: [...g.items, { id: uid('i'), code, status: 'PENDING', note: '' }] } : g)
+    }));
+  };
+
+  const generateRange = (groupId) => {
+    const group = data.groups.find(g => g.id === groupId);
+    const fromStr = prompt(`Gerar faixa — número inicial (ex: 1):`, '1');
+    if (fromStr === null) return;
+    const toStr = prompt(`Número final (ex: 30):`, '30');
+    if (toStr === null) return;
+    const from = parseInt(fromStr, 10);
+    const to = parseInt(toStr, 10);
+    if (isNaN(from) || isNaN(to) || to < from) { alert('Faixa inválida.'); return; }
+    if (to - from > 500) { alert('Faixa grande demais (máximo 500 itens por vez).'); return; }
+    const width = String(to).length >= 3 ? String(to).length : 3;
+    const newItems = [];
+    for (let n = from; n <= to; n++) {
+      newItems.push({ id: uid('i'), code: `${group.prefix} ${padNumber(n, width)}`, status: 'PENDING', note: '' });
+    }
+    updateMapData(m => ({
+      ...m,
+      groups: m.groups.map(g => g.id === groupId ? { ...g, items: [...g.items, ...newItems] } : g)
+    }));
+  };
+
+  const deleteItem = (groupId, itemId) => {
+    updateMapData(m => ({
+      ...m,
+      groups: m.groups.map(g => g.id === groupId ? { ...g, items: g.items.filter(i => i.id !== itemId) } : g)
+    }));
+  };
+
+  // Clique cicla: PENDING (em branco) -> DONE (verde) -> ISSUE (vermelho, com nota) -> PENDING
+  const cycleItemStatus = (groupId, itemId) => {
+    updateMapData(m => ({
+      ...m,
+      groups: m.groups.map(g => {
+        if (g.id !== groupId) return g;
+        return {
+          ...g,
+          items: g.items.map(i => {
+            if (i.id !== itemId) return i;
+            if (i.status === 'PENDING') return { ...i, status: 'DONE', note: '' };
+            if (i.status === 'DONE') return { ...i, status: 'ISSUE', note: i.note || 'MISSING CABLE' };
+            return { ...i, status: 'PENDING', note: '' };
+          })
+        };
+      })
+    }));
+  };
+
+  const updateItemNote = (groupId, itemId, note) => {
+    updateMapData(m => ({
+      ...m,
+      groups: m.groups.map(g => g.id === groupId ? { ...g, items: g.items.map(i => i.id === itemId ? { ...i, note } : i) } : g)
+    }));
+  };
+
+  const addLocation = () => {
+    updateMapData(m => ({ ...m, locations: [...m.locations, { id: uid('loc'), name: '', coords: '' }] }));
+  };
+  const updateLocation = (locId, field, value) => {
+    updateMapData(m => ({ ...m, locations: m.locations.map(l => l.id === locId ? { ...l, [field]: value } : l) }));
+  };
+  const deleteLocation = (locId) => {
+    updateMapData(m => ({ ...m, locations: m.locations.filter(l => l.id !== locId) }));
+  };
+
+  // Totais gerais do mapa (todos os grupos somados)
+  const totals = useMemo(() => {
+    if (!data) return { total: 0, done: 0, pct: 0 };
+    let total = 0, done = 0;
+    data.groups.forEach(g => { total += g.items.length; done += g.items.filter(i => i.status === 'DONE').length; });
+    return { total, done, pct: total > 0 ? (done / total) * 100 : 0 };
+  }, [data]);
+
+  const exportPendingsXLSX = async () => {
+    if (!window.ExcelJS || !data) return;
+    const wb = new window.ExcelJS.Workbook();
+    buildPendingsSheet(wb, selectedMap, data);
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Pendings_${selectedMap}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const itemStyle = (status) => {
+    if (status === 'DONE') return { background: C.greenSoft, color: C.green, border: `1px solid ${C.green}` };
+    if (status === 'ISSUE') return { background: C.redSoft, color: C.red, border: `1px solid ${C.red}` };
+    return { background: C.panel2, color: C.textDim, border: `1px solid ${C.border2}` };
+  };
+
+  return (
+    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* SELETOR DE MAPA */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Mapa:</span>
+        <select value={selectedMap} onChange={(e) => setSelectedMap(e.target.value)} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "7px 10px", fontSize: 11, fontWeight: 700, outline: "none", cursor: "pointer" }}>
+          <option value="" style={{ background: C.panel }}>— selecione —</option>
+          {mapKeys.map(k => <option key={k} value={k} style={{ background: C.panel }}>{k}</option>)}
+        </select>
+        <button onClick={createNewMap} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 5, padding: "7px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+          <Plus size={13} /> Novo Mapa
+        </button>
+        {selectedMap && (
+          <>
+            <button onClick={exportPendingsXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, borderRadius: 5, padding: "7px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+              <Download size={13} /> Exportar Pendings (.XLSX)
+            </button>
+            <button onClick={deleteCurrentMap} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "7px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", marginLeft: "auto" }}>
+              <Trash2 size={12} /> Apagar Mapa
+            </button>
+          </>
+        )}
+      </div>
+
+      {!selectedMap && (
+        <div style={{ padding: 30, textAlign: "center", color: C.textFaint, fontSize: 12 }}>
+          Selecione um mapa acima ou crie um novo pra começar a marcar os pendings.
+        </div>
+      )}
+
+      {selectedMap && data && (
+        <>
+          {/* TÍTULO */}
+          <input
+            value={data.title}
+            onChange={(e) => setTitle(e.target.value)}
+            style={{ background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 6, padding: "12px 16px", fontSize: 16, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: FONT_HEAD }}
+          />
+
+          {/* TOTAL / DONE / % */}
+          <div style={{ display: "flex", gap: 0, width: 260, borderRadius: 6, overflow: "hidden", border: `1px solid ${C.border2}` }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ background: "rgba(255,214,0,0.15)", color: C.amber, fontWeight: 800, fontSize: 11, padding: "6px 10px", borderBottom: `1px solid ${C.border2}` }}>TOTAL</div>
+              <div style={{ background: C.greenSoft, color: C.green, fontWeight: 800, fontSize: 11, padding: "6px 10px", borderBottom: `1px solid ${C.border2}` }}>DONE</div>
+              <div style={{ background: C.accentSoft, color: C.accent, fontWeight: 800, fontSize: 11, padding: "6px 10px" }}>%</div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ background: "rgba(255,214,0,0.15)", color: C.amber, fontWeight: 800, fontSize: 11, padding: "6px 10px", borderBottom: `1px solid ${C.border2}`, textAlign: "center" }}>{totals.total}</div>
+              <div style={{ background: C.greenSoft, color: C.green, fontWeight: 800, fontSize: 11, padding: "6px 10px", borderBottom: `1px solid ${C.border2}`, textAlign: "center" }}>{totals.done}</div>
+              <div style={{ background: C.accentSoft, color: C.accent, fontWeight: 800, fontSize: 11, padding: "6px 10px", textAlign: "center" }}>{totals.pct.toFixed(2)}%</div>
+            </div>
+          </div>
+
+          {/* GRUPOS DE ITENS */}
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+            {data.groups.map(g => (
+              <div key={g.id} style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 10, width: 200 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span onClick={() => renameGroup(g.id)} style={{ fontSize: 11, fontWeight: 800, color: C.text, cursor: "pointer" }} title="Clique pra renomear">{g.prefix} ({g.items.filter(i => i.status === 'DONE').length}/{g.items.length})</span>
+                  <X size={13} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => deleteGroup(g.id)} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 340, overflowY: "auto", marginBottom: 8 }}>
+                  {g.items.map(item => (
+                    <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <div
+                        onClick={() => cycleItemStatus(g.id, item.id)}
+                        title="Clique pra mudar o status (pendente → concluído → problema)"
+                        style={{ ...itemStyle(item.status), flex: 1, borderRadius: 4, padding: "4px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", display: "flex", justifyContent: "space-between", gap: 6 }}
+                      >
+                        <span>{item.code}</span>
+                        <span>{item.status === 'DONE' ? 'DONE' : ''}</span>
+                      </div>
+                      <X size={11} color={C.textFaint} style={{ cursor: "pointer", flexShrink: 0 }} onClick={() => deleteItem(g.id, item.id)} />
+                    </div>
+                  ))}
+                  {g.items.filter(i => i.status === 'ISSUE').map(item => (
+                    <input
+                      key={item.id + '-note'}
+                      value={item.note}
+                      onChange={(e) => updateItemNote(g.id, item.id, e.target.value)}
+                      placeholder="Descreva o problema..."
+                      style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, borderRadius: 4, padding: "3px 6px", fontSize: 9.5, outline: "none" }}
+                    />
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => addSingleItem(g.id)} style={{ flex: 1, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ Item</button>
+                  <button onClick={() => generateRange(g.id)} style={{ flex: 1, background: "transparent", color: C.purple, border: `1px dashed ${C.purple}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ Faixa</button>
+                </div>
+              </div>
+            ))}
+
+            <button onClick={addGroup} style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px dashed ${C.border2}`, borderRadius: 6, padding: 10, width: 100, height: 60, cursor: "pointer" }}>
+              <Plus size={16} /> <span style={{ fontSize: 9.5, fontWeight: 700 }}>Novo Grupo</span>
+            </button>
+          </div>
+
+          {/* LOCATION / COORDINATES */}
+          <div style={{ maxWidth: 480 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.textDim, textTransform: "uppercase", marginBottom: 6 }}>Location / Coordinates</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: "6px 8px", background: C.panel2, border: `1px solid ${C.border2}`, textAlign: "left" }}>LOCATION</th>
+                  <th style={{ padding: "6px 8px", background: C.panel2, border: `1px solid ${C.border2}`, textAlign: "left" }}>COORDINATES</th>
+                  <th style={{ padding: "6px 8px", background: C.panel2, border: `1px solid ${C.border2}`, width: 30 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.locations.map(loc => (
+                  <tr key={loc.id}>
+                    <td style={{ padding: 2, border: `1px solid ${C.borderSoft}` }}>
+                      <input value={loc.name} onChange={(e) => updateLocation(loc.id, 'name', e.target.value)} placeholder="DISTRIBUTION #1" style={{ width: "100%", background: "transparent", color: C.text, border: "none", outline: "none", padding: "5px 6px", fontSize: 11 }} />
+                    </td>
+                    <td style={{ padding: 2, border: `1px solid ${C.borderSoft}` }}>
+                      <input value={loc.coords} onChange={(e) => updateLocation(loc.id, 'coords', e.target.value)} placeholder="33.754018N, 86.011085W" style={{ width: "100%", background: "transparent", color: C.text, border: "none", outline: "none", padding: "5px 6px", fontSize: 11 }} />
+                    </td>
+                    <td style={{ padding: 2, border: `1px solid ${C.borderSoft}`, textAlign: "center" }}>
+                      <X size={12} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => deleteLocation(loc.id)} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button onClick={addLocation} style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 4, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+              <Plus size={11} /> Adicionar Location
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Constrói a planilha "PENDINGS" (usada tanto na exportação isolada quanto dentro da Lista de Produção)
+function buildPendingsSheet(wb, mapName, data) {
+  const sheetName = `PENDINGS ${mapName}`.slice(0, 31);
+  const ws = wb.addWorksheet(sheetName);
+
+  const titleFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB4C7E7' } };
+  const totalFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
+  const doneFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FF00' } };
+  const pctFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B0F0' } };
+  const greenFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FF00' } };
+  const redFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+  const grayBorder = { style: 'thin', color: { argb: 'FF999999' } };
+  const thickBorder = { style: 'medium', color: { argb: 'FF000000' } };
+
+  // Título (linha 1, mesclado)
+  ws.getRow(1).getCell(6).value = data.title;
+  ws.mergeCells(1, 6, 1, 15);
+  const titleCell = ws.getRow(1).getCell(6);
+  titleCell.fill = titleFill;
+  titleCell.font = { bold: true, size: 18 };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  titleCell.border = { top: thickBorder, bottom: thickBorder, left: thickBorder, right: thickBorder };
+
+  // TOTAL / DONE / %
+  let total = 0, done = 0;
+  data.groups.forEach(g => { total += g.items.length; done += g.items.filter(i => i.status === 'DONE').length; });
+  const pct = total > 0 ? (done / total) * 100 : 0;
+
+  const summaryRows = [
+    { row: 3, label: 'TOTAL', value: total, fill: totalFill },
+    { row: 4, label: 'DONE', value: done, fill: doneFill },
+    { row: 5, label: '%', value: `${pct.toFixed(2)}%`, fill: pctFill }
+  ];
+  summaryRows.forEach(({ row, label, value, fill }) => {
+    const labelCell = ws.getRow(row).getCell(2);
+    const valueCell = ws.getRow(row).getCell(3);
+    labelCell.value = label;
+    valueCell.value = value;
+    [labelCell, valueCell].forEach(cell => {
+      cell.fill = fill;
+      cell.font = { bold: true };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = { top: grayBorder, bottom: grayBorder, left: grayBorder, right: grayBorder };
+    });
+  });
+
+  // Grupos de itens (cada grupo ocupa 2 colunas: código + status, com 1 coluna de espaço entre grupos)
+  const startRow = 7;
+  let col = 6;
+  data.groups.forEach((g) => {
+    g.items.forEach((item, idx) => {
+      const codeCell = ws.getRow(startRow + idx).getCell(col);
+      const statusCell = ws.getRow(startRow + idx).getCell(col + 1);
+      codeCell.value = item.code;
+      codeCell.border = { top: grayBorder, bottom: grayBorder, left: grayBorder, right: grayBorder };
+      statusCell.border = { top: grayBorder, bottom: grayBorder, left: grayBorder, right: grayBorder };
+      if (item.status === 'DONE') {
+        codeCell.fill = greenFill;
+        statusCell.value = 'DONE';
+        statusCell.fill = greenFill;
+      } else if (item.status === 'ISSUE') {
+        codeCell.fill = redFill;
+        codeCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+        statusCell.value = item.note || 'PROBLEMA';
+        statusCell.fill = redFill;
+        statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+      }
+    });
+    ws.getColumn(col).width = 10;
+    ws.getColumn(col + 1).width = 16;
+    col += 3; // pula uma coluna de espaço antes do próximo grupo
+  });
+
+  // LOCATION / COORDINATES — colocado à direita, começando na mesma linha dos grupos
+  if (data.locations && data.locations.length > 0) {
+    const locCol = col + 1;
+    const locHeaderRow = startRow;
+    ws.getRow(locHeaderRow).getCell(locCol).value = 'LOCATION';
+    ws.getRow(locHeaderRow).getCell(locCol + 1).value = 'COORDINATIES';
+    [locCol, locCol + 1].forEach((c) => {
+      const cell = ws.getRow(locHeaderRow).getCell(c);
+      cell.font = { bold: true };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = { top: grayBorder, bottom: grayBorder, left: grayBorder, right: grayBorder };
+    });
+    data.locations.forEach((loc, idx) => {
+      const nameCell = ws.getRow(locHeaderRow + 1 + idx).getCell(locCol);
+      const coordsCell = ws.getRow(locHeaderRow + 1 + idx).getCell(locCol + 1);
+      nameCell.value = loc.name;
+      coordsCell.value = loc.coords;
+      [nameCell, coordsCell].forEach(cell => {
+        cell.fill = greenFill;
+        cell.font = { bold: true };
+        cell.border = { top: grayBorder, bottom: grayBorder, left: grayBorder, right: grayBorder };
+      });
+    });
+    ws.getColumn(locCol).width = 22;
+    ws.getColumn(locCol + 1).width = 26;
+  }
+
+  return ws;
 }
 
 function FiberCalcTab() {
@@ -1506,6 +1933,7 @@ function ProductionDashboard() {
 
   const [search, setSearch] = useState("");
   const [selectedCycle, setSelectedCycle] = useState("SEMANA_1");
+  const [selectedDeliveryDay, setSelectedDeliveryDay] = useState("ALL");
   const [showModal, setShowModal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [modalMode, setModalMode] = useState("GENERAL"); // 'GENERAL' (Controle Geral / Novo Item) ou 'QUEUE' (Prioridade da Fila — atualização diária de AS-BUILT)
@@ -1593,6 +2021,26 @@ function ProductionDashboard() {
   const otQueueItems = useMemo(() => {
     return filteredAndSorted.filter(p => p.otCount > 0);
   }, [filteredAndSorted]);
+
+  // Dias de entrega disponíveis (extraídos dos próprios itens cadastrados, não é lista fixa)
+  const deliveryDayOptions = useMemo(() => {
+    const set = new Set();
+    filteredAndSorted.forEach((p) => { if (p.deliveryDay && p.deliveryDay.trim()) set.add(p.deliveryDay.trim().toUpperCase()); });
+    return Array.from(set).sort();
+  }, [filteredAndSorted]);
+
+  // Se o dia selecionado sumir da lista (ex: trocou de semana), volta pra "Todos"
+  useEffect(() => {
+    if (selectedDeliveryDay !== "ALL" && !deliveryDayOptions.includes(selectedDeliveryDay)) {
+      setSelectedDeliveryDay("ALL");
+    }
+  }, [deliveryDayOptions, selectedDeliveryDay]);
+
+  // Itens da tabela "Controle Geral" filtrados pelo dia de entrega selecionado
+  const generalTableItems = useMemo(() => {
+    if (selectedDeliveryDay === "ALL") return filteredAndSorted;
+    return filteredAndSorted.filter((p) => (p.deliveryDay || "").trim().toUpperCase() === selectedDeliveryDay);
+  }, [filteredAndSorted, selectedDeliveryDay]);
 
   // DESEMPENHO POR COLABORADOR: CADA ATUALIZAÇÃO SOMA 1 PONTO
   const perfCollaborators = useMemo(() => {
@@ -1718,6 +2166,49 @@ function ProductionDashboard() {
     return totals;
   }, [filteredProduction]);
 
+  // ===== FECHAMENTO / INVOICE — preço por código (editável, sincronizado com a equipe) =====
+  const [invoicePrices, setInvoicePrices] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_INVOICE_PRICES) || 'null');
+      if (saved) return saved;
+    } catch (e) {}
+    const defaults = {};
+    CODE_FIELDS.forEach(f => defaults[f.id] = 10);
+    return defaults;
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_INVOICE_PRICES, JSON.stringify(invoicePrices)); } catch (e) { console.error('Erro ao salvar preços do invoice', e); }
+  }, [invoicePrices]);
+  useCloudSync('invoice_prices', [invoicePrices], () => invoicePrices, (v) => setInvoicePrices(v));
+
+  const updateInvoicePrice = (codeId, value) => {
+    setInvoicePrices(prev => ({ ...prev, [codeId]: value === '' ? '' : Number(value) }));
+  };
+
+  // Linhas do invoice: código, total de unidades, preço unitário e subtotal (total x preço)
+  const invoiceRows = useMemo(() => {
+    return CODE_FIELDS.map(f => {
+      const total = codeTotals[f.id] || 0;
+      const price = Number(invoicePrices[f.id]) || 0;
+      return { id: f.id, label: f.label, total, price, subtotal: total * price };
+    });
+  }, [codeTotals, invoicePrices]);
+
+  const invoiceGrandTotal = useMemo(() => invoiceRows.reduce((sum, r) => sum + r.subtotal, 0), [invoiceRows]);
+
+  // ===== PENDINGS POR MAPA (checklist manual: FT/SE/S, DONE/MISSING, coordenadas) =====
+  const [pendingsByMap, setPendingsByMap] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_PENDINGS) || 'null');
+      if (saved) return saved;
+    } catch (e) {}
+    return {};
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_PENDINGS, JSON.stringify(pendingsByMap)); } catch (e) { console.error('Erro ao salvar pendings', e); }
+  }, [pendingsByMap]);
+  useCloudSync('pendings_by_map', [pendingsByMap], () => pendingsByMap, (v) => setPendingsByMap(v));
+
   const handleSaveProd = (item) => {
     if (item.id) {
       setProductionList(prev => prev.map(p => p.id === item.id ? item : p));
@@ -1832,6 +2323,15 @@ function ProductionDashboard() {
     ws.views = [{ state: 'frozen', ySplit: 2 }];
     ws.autoFilter = `A2:${colLetter(totalCols)}2`;
 
+    // ===== ADICIONA A(S) ABA(S) DE PENDINGS NO MESMO ARQUIVO =====
+    if (selectedMapProd === "ALL") {
+      Object.keys(pendingsByMap).sort().forEach((mapName) => {
+        buildPendingsSheet(wb, mapName, pendingsByMap[mapName]);
+      });
+    } else if (pendingsByMap[selectedMapProd]) {
+      buildPendingsSheet(wb, selectedMapProd, pendingsByMap[selectedMapProd]);
+    }
+
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
@@ -1839,6 +2339,306 @@ function ProductionDashboard() {
     link.href = url;
     const mapSuffix = selectedMapProd === "ALL" ? "TODOS" : selectedMapProd.replace(/\s+/g, "_");
     link.download = `Producao_Asbuilt_${mapSuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // ===== EXPORTAR INVOICE (.XLSX) — dados da produção em cima + fechamento (TOTAL/PRICE/SUBTOTAL) embaixo =====
+  const exportInvoiceXLSX = async () => {
+    if (!window.ExcelJS) {
+      alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
+      return;
+    }
+    const mainHeaders = ["DAILY", "PENDINGS", "DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE"];
+    const codeHeaders = CODE_FIELDS.map((f) => f.label);
+    const headers = [...mainHeaders, ...codeHeaders, "ASBUILT (GERADO)"];
+    const nMain = mainHeaders.length;
+    const nCode = codeHeaders.length;
+    const totalCols = headers.length;
+    const colLetter = (n) => {
+      let s = '';
+      while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+      return s;
+    };
+
+    const wb = new window.ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Invoice');
+
+    // ===== BLOCO 1: DADOS DA PRODUÇÃO (igual à Lista de Produção) =====
+    // ----- LINHA 1: TOTAIS -----
+    const totalsRowData = new Array(totalCols).fill('');
+    totalsRowData[0] = `TOTAIS ${selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`} -->`;
+    CODE_FIELDS.forEach((f, i) => { totalsRowData[nMain + i] = codeTotals[f.id] || 0; });
+    totalsRowData[totalCols - 1] = 'AUTOMÁTICO';
+    ws.getRow(1).values = totalsRowData;
+    ws.mergeCells(1, 1, 1, nMain);
+
+    // ----- LINHA 2: CABEÇALHOS -----
+    ws.getRow(2).values = headers;
+
+    // ----- LINHAS 3+: DADOS -----
+    filteredProduction.forEach((item, idx) => {
+      const asbuiltText = computeAsbuiltFormat(item.codes);
+      ws.getRow(3 + idx).values = [
+        item.daily || '', item.pendings || '', item.date || '', item.map || '', item.location || '',
+        item.splice || '', item.name || '', item.type || '', item.typeEnd || '',
+        ...CODE_FIELDS.map((f) => item.codes?.[f.id] || ''),
+        asbuiltText
+      ];
+    });
+
+    const lastDataRow = 2 + filteredProduction.length;
+
+    // ----- CORES DO BLOCO 1 -----
+    const mainHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B5E20' } };
+    const codeHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF33691E' } };
+    const totalsFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB3E5FC' } };
+    const dateMapLocFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } };
+    const codeDataFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFFF' } };
+    const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
+
+    for (let c = 1; c <= totalCols; c++) {
+      const cell = ws.getRow(1).getCell(c);
+      cell.fill = totalsFill;
+      cell.font = { bold: true, color: { argb: 'FF0D47A1' } };
+      cell.alignment = { horizontal: c === 1 ? 'right' : 'center', vertical: 'middle' };
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    }
+    for (let c = 1; c <= totalCols; c++) {
+      const cell = ws.getRow(2).getCell(c);
+      const isCode = c > nMain && c <= nMain + nCode;
+      cell.fill = isCode ? codeHeaderFill : mainHeaderFill;
+      cell.font = { bold: true, color: { argb: isCode ? 'FFC6E0B4' : 'FFFFFFFF' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    }
+    for (let r = 3; r <= lastDataRow; r++) {
+      for (let c = 1; c <= totalCols; c++) {
+        const cell = ws.getRow(r).getCell(c);
+        cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        if (c >= 3 && c <= 5) cell.fill = dateMapLocFill;
+        if (c > nMain && c <= nMain + nCode) cell.fill = codeDataFill;
+      }
+      const asbuiltCell = ws.getRow(r).getCell(totalCols);
+      asbuiltCell.alignment = { horizontal: 'left', vertical: 'middle' };
+      asbuiltCell.font = { bold: true };
+    }
+
+    // ===== BLOCO 2: FECHAMENTO / INVOICE (TOTAL, PRICE e SUBTOTAL) =====
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
+    const lightBlueFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFBDD7EE' } };
+    const subtotalFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+
+    const miniStartRow = lastDataRow + 3; // deixa 2 linhas em branco de respiro
+    const miniStartCol = nMain + 1;       // alinha as colunas dos códigos com o bloco de cima
+
+    // Cabeçalho com os códigos
+    for (let i = 0; i < nCode; i++) {
+      const cell = ws.getRow(miniStartRow).getCell(miniStartCol + i);
+      cell.value = codeHeaders[i];
+      cell.fill = headerFill;
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    }
+    // Rótulo "TOTAL" / "PRICE" na coluna anterior aos códigos
+    ws.getRow(miniStartRow + 1).getCell(miniStartCol - 1).value = 'TOTAL';
+    ws.getRow(miniStartRow + 2).getCell(miniStartCol - 1).value = 'PRICE';
+
+    invoiceRows.forEach((r, i) => {
+      const totalCell = ws.getRow(miniStartRow + 1).getCell(miniStartCol + i);
+      totalCell.value = r.total;
+      const priceCell = ws.getRow(miniStartRow + 2).getCell(miniStartCol + i);
+      priceCell.value = r.price;
+      priceCell.numFmt = '"$" #,##0.00';
+      [totalCell, priceCell].forEach((cell) => {
+        cell.fill = lightBlueFill;
+        cell.font = { bold: true, color: { argb: 'FF0D3D6E' } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+      });
+    });
+    [miniStartRow + 1, miniStartRow + 2].forEach((r) => {
+      const labelCell = ws.getRow(r).getCell(miniStartCol - 1);
+      labelCell.fill = lightBlueFill;
+      labelCell.font = { bold: true, color: { argb: 'FF0D3D6E' } };
+      labelCell.alignment = { horizontal: 'left', vertical: 'middle' };
+      labelCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    });
+
+    // ----- TABELA VERTICAL (CÓDIGO / $), à direita da mini-tabela, com SUBTOTAL no final -----
+    const vStartRow = miniStartRow;
+    const codeCol = miniStartCol + nCode + 3;
+    const valueCol = codeCol + 1;
+    invoiceRows.forEach((r, idx) => {
+      const row = ws.getRow(vStartRow + idx);
+      row.getCell(codeCol).value = r.label;
+      row.getCell(valueCol).value = r.subtotal;
+      row.getCell(codeCol).fill = lightBlueFill;
+      row.getCell(valueCol).fill = lightBlueFill;
+      row.getCell(codeCol).alignment = { horizontal: 'center', vertical: 'middle' };
+      row.getCell(valueCol).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(valueCol).numFmt = '"$" #,##0.00';
+      row.getCell(codeCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+      row.getCell(valueCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    });
+
+    const subtotalRow = vStartRow + invoiceRows.length + 2;
+    ws.getRow(subtotalRow).getCell(codeCol).value = 'SUBTOTAL';
+    ws.getRow(subtotalRow).getCell(valueCol).value = invoiceGrandTotal;
+    ws.getRow(subtotalRow).getCell(codeCol).fill = subtotalFill;
+    ws.getRow(subtotalRow).getCell(valueCol).fill = subtotalFill;
+    ws.getRow(subtotalRow).getCell(codeCol).font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+    ws.getRow(subtotalRow).getCell(valueCol).font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+    ws.getRow(subtotalRow).getCell(codeCol).alignment = { horizontal: 'center', vertical: 'middle' };
+    ws.getRow(subtotalRow).getCell(valueCol).alignment = { horizontal: 'right', vertical: 'middle' };
+    ws.getRow(subtotalRow).getCell(valueCol).numFmt = '"$" #,##0.00';
+    ws.getRow(subtotalRow).getCell(codeCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    ws.getRow(subtotalRow).getCell(valueCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+
+    // Larguras de coluna
+    ws.columns = headers.map((h, i) => ({
+      width: i < nMain ? (i === 4 ? 14 : 11) : (i < nMain + nCode ? 9 : 22)
+    }));
+    ws.getColumn(codeCol).width = 14;
+    ws.getColumn(valueCol).width = 16;
+
+    // Congela as duas primeiras linhas (totais + cabeçalho) e ativa o filtro no bloco de dados
+    ws.views = [{ state: 'frozen', ySplit: 2 }];
+    ws.autoFilter = `A2:${colLetter(totalCols)}2`;
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const mapSuffix = selectedMapProd === "ALL" ? "TODOS" : selectedMapProd.replace(/\s+/g, "_");
+    link.download = `Invoice_${mapSuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // ===== EXPORTAR .XLSX COLORIDO DA TABELA "CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO" =====
+  const exportGeneralXLSX = async () => {
+    if (!window.ExcelJS) {
+      alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
+      return;
+    }
+    const headers = [
+      "ENTREGA", "MAPA / CÓDIGO", "OTS PENDENTES",
+      "AS-BUILT STATUS", "AS-BUILT TÉCNICO", "AS-BUILT DATA",
+      "INVOICE STATUS", "INVOICE TÉCNICO", "INVOICE DATA",
+      "WORKBOOK STATUS", "WORKBOOK TÉCNICO", "WORKBOOK DATA",
+      "STATUS GERAL", "OBSERVAÇÕES"
+    ];
+    const totalCols = headers.length;
+    const colLetter = (n) => {
+      let s = '';
+      while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+      return s;
+    };
+
+    const stageLabel = (st) => (st === "OK" || st === "SIM") ? "ATUALIZADO" : (st === "FAZENDO" ? "FAZENDO" : "PENDENTE");
+    const generalLabel = (st) => st === "OK" ? "PRONTO" : (st === "PENDING_REVISION" ? "REVISÃO NECESSÁRIA" : "SEM ATUALIZAÇÃO");
+
+    const wb = new window.ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Controle Geral');
+
+    // ----- LINHA 1: CABEÇALHOS -----
+    ws.getRow(1).values = headers;
+
+    // ----- LINHAS 2+: DADOS -----
+    generalTableItems.forEach((item, idx) => {
+      ws.getRow(2 + idx).values = [
+        item.deliveryDay || '', item.map || '', item.otCount || 0,
+        stageLabel(item.asbuiltStatus), item.asbuiltTech || '', item.asbuiltDate || '',
+        stageLabel(item.invoiceStatus), item.invoiceTech || '', item.invoiceDate || '',
+        stageLabel(item.workbookStatus), item.workbookTech || '', item.workbookDate || '',
+        generalLabel(item.status), item.note || ''
+      ];
+    });
+
+    const lastDataRow = 1 + generalTableItems.length;
+
+    // ----- CORES -----
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D1117' } };
+    const greenFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+    const greenFont = { color: { argb: 'FF1E7A34' }, bold: true };
+    const amberFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEB9C' } };
+    const amberFont = { color: { argb: 'FF9C6500' }, bold: true };
+    const redFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+    const redFont = { color: { argb: 'FF9C0006' }, bold: true };
+    const grayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E5E5' } };
+    const grayFont = { color: { argb: 'FF666666' } };
+    const otFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB3E5FC' } };
+    const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
+
+    // Cabeçalho
+    for (let c = 1; c <= totalCols; c++) {
+      const cell = ws.getRow(1).getCell(c);
+      cell.fill = headerFill;
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    }
+
+    // Colunas com status (AS-BUILT, INVOICE, WORKBOOK, GERAL) coloridas por cor de andamento
+    const stageStatusCols = [4, 7, 10]; // AS-BUILT / INVOICE / WORKBOOK status
+    const generalStatusCol = 13;
+
+    for (let r = 2; r <= lastDataRow; r++) {
+      const item = generalTableItems[r - 2];
+      for (let c = 1; c <= totalCols; c++) {
+        const cell = ws.getRow(r).getCell(c);
+        cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+        cell.alignment = { horizontal: c === totalCols ? 'left' : 'center', vertical: 'middle', wrapText: c === totalCols };
+      }
+      // OTs pendentes em destaque
+      const otCell = ws.getRow(r).getCell(3);
+      otCell.fill = otFill;
+      otCell.font = { bold: true };
+
+      // Colore cada coluna de status (AS-BUILT, INVOICE, WORKBOOK) conforme o andamento
+      const stageStatuses = [item.asbuiltStatus, item.invoiceStatus, item.workbookStatus];
+      stageStatusCols.forEach((colIdx, i) => {
+        const st = stageStatuses[i];
+        const cell = ws.getRow(r).getCell(colIdx);
+        if (st === "OK" || st === "SIM") { cell.fill = greenFill; cell.font = greenFont; }
+        else if (st === "FAZENDO") { cell.fill = amberFill; cell.font = amberFont; }
+        else { cell.fill = redFill; cell.font = redFont; }
+      });
+
+      // Colore a coluna de Status Geral
+      const gCell = ws.getRow(r).getCell(generalStatusCol);
+      if (item.status === "OK") { gCell.fill = greenFill; gCell.font = greenFont; }
+      else if (item.status === "PENDING_REVISION") { gCell.fill = redFill; gCell.font = redFont; }
+      else { gCell.fill = grayFill; gCell.font = grayFont; }
+    }
+
+    // Larguras de coluna
+    ws.columns = headers.map((h, i) => {
+      if (i === 1) return { width: 22 }; // MAPA / CÓDIGO
+      if (i === totalCols - 1) return { width: 30 }; // OBSERVAÇÕES
+      if (i === 12) return { width: 18 }; // STATUS GERAL
+      return { width: 13 };
+    });
+
+    // Congela o cabeçalho e ativa o filtro
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    ws.autoFilter = `A1:${colLetter(totalCols)}1`;
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const daySuffix = selectedDeliveryDay === "ALL" ? "TODAS_ENTREGAS" : selectedDeliveryDay.replace(/\s+/g, "_");
+    link.download = `Controle_Geral_${daySuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1906,6 +2706,18 @@ function ProductionDashboard() {
               }}
             >
               <List size={13} /> CALCULADORA DE FIBRA
+            </button>
+            <button
+              onClick={() => setActiveTab("PENDINGS")}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: activeTab === "PENDINGS" ? C.greenSoft : "transparent",
+                color: activeTab === "PENDINGS" ? C.green : C.textDim,
+                border: activeTab === "PENDINGS" ? `1px solid ${C.green}` : "1px solid transparent",
+                borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
+              }}
+            >
+              <CheckCircle size={13} /> PENDINGS (MAPA)
             </button>
           </div>
         </div>
@@ -1975,6 +2787,8 @@ function ProductionDashboard() {
       {activeTab === "AUTOMACAO" && <AutomacaoMapaTab />}
 
       {activeTab === "FIBER_CALC" && <FiberCalcTab />}
+
+      {activeTab === "PENDINGS" && <PendingsTab pendingsByMap={pendingsByMap} setPendingsByMap={setPendingsByMap} suggestedMaps={availableMaps} />}
 
       {activeTab === "PRODUCTION_LIST" && (
         <div style={{ padding: "20px" }}>
@@ -2079,6 +2893,79 @@ function ProductionDashboard() {
                       </tr>
                     );
                   })}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          {/* FECHAMENTO / INVOICE — soma dos códigos x preço unitário */}
+          <Panel
+            title={`FECHAMENTO / INVOICE ${selectedMapProd === "ALL" ? "— TODOS OS MAPAS" : `— MAPA ${selectedMapProd}`}`}
+            right={
+              <button onClick={exportInvoiceXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.purple, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
+                <Download size={14} /> Exportar Invoice (.XLSX)
+              </button>
+            }
+          >
+            <div style={{ fontSize: 10.5, color: C.textDim, marginBottom: 12 }}>
+              💡 Ajuste o preço (<strong style={{ color: C.accent }}>PRICE</strong>) de cada código abaixo — o subtotal é calculado sozinho (TOTAL × PRICE) e fica salvo/sincronizado com a equipe.
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
+                <thead>
+                  <tr style={{ background: "#1F4E79", color: "#fff", textAlign: "center" }}>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}` }}></th>
+                    {invoiceRows.map(r => (
+                      <th key={r.id} style={{ padding: 8, border: `1px solid ${C.border2}` }}>{r.label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr style={{ background: "rgba(0, 212, 255, 0.12)", textAlign: "center" }}>
+                    <td style={{ padding: 8, border: `1px solid ${C.border2}`, fontWeight: 800, color: C.accent }}>TOTAL</td>
+                    {invoiceRows.map(r => (
+                      <td key={r.id} style={{ padding: 8, border: `1px solid ${C.border2}`, color: C.amber, fontWeight: 700 }}>{r.total}</td>
+                    ))}
+                  </tr>
+                  <tr style={{ background: "rgba(0, 212, 255, 0.06)", textAlign: "center" }}>
+                    <td style={{ padding: 8, border: `1px solid ${C.border2}`, fontWeight: 800, color: C.accent }}>PRICE</td>
+                    {invoiceRows.map(r => (
+                      <td key={r.id} style={{ padding: 4, border: `1px solid ${C.border2}` }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                          <span style={{ color: C.textFaint, fontSize: 10 }}>$</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={invoicePrices[r.id] ?? ''}
+                            onChange={(e) => updateInvoicePrice(r.id, e.target.value)}
+                            style={{ width: 60, background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 4, padding: "4px 6px", fontSize: 11, textAlign: "center", outline: "none" }}
+                          />
+                        </div>
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* TABELA VERTICAL: CÓDIGO x SUBTOTAL, com SUBTOTAL GERAL no final */}
+            <div style={{ maxWidth: 380, marginTop: 18 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <tbody>
+                  {invoiceRows.map(r => (
+                    <tr key={r.id}>
+                      <td style={{ padding: "7px 12px", background: "rgba(0, 212, 255, 0.08)", border: `1px solid ${C.border2}`, textAlign: "center", fontWeight: 700, color: C.text }}>{r.label}</td>
+                      <td style={{ padding: "7px 12px", background: "rgba(0, 212, 255, 0.08)", border: `1px solid ${C.border2}`, textAlign: "right", fontWeight: 700, color: r.subtotal > 0 ? C.green : C.textFaint }}>
+                        {r.subtotal.toLocaleString('pt-BR', { style: 'currency', currency: 'USD' })}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td style={{ padding: "10px 12px", background: "#1F3864", border: `1px solid ${C.border2}`, textAlign: "center", fontWeight: 800, color: "#fff", fontSize: 13 }}>SUBTOTAL</td>
+                    <td style={{ padding: "10px 12px", background: "#1F3864", border: `1px solid ${C.border2}`, textAlign: "right", fontWeight: 800, color: "#fff", fontSize: 13 }}>
+                      {invoiceGrandTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'USD' })}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -2309,12 +3196,52 @@ function ProductionDashboard() {
         <Panel
           title="CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO"
           right={
-            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 10px" }}>
-              <Search size={12} color={C.textFaint} />
-              <input placeholder="Buscar por mapa, técnico..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 180 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button onClick={exportGeneralXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                <Download size={12} /> Exportar XLSX
+              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 10px" }}>
+                <Search size={12} color={C.textFaint} />
+                <input placeholder="Buscar por mapa, técnico..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 180 }} />
+              </div>
             </div>
           }
         >
+          {/* ABAS POR DIA DE ENTREGA */}
+          {deliveryDayOptions.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+              <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>Entrega:</span>
+              <button
+                onClick={() => setSelectedDeliveryDay("ALL")}
+                style={{
+                  background: selectedDeliveryDay === "ALL" ? C.accentSoft : C.panel2,
+                  color: selectedDeliveryDay === "ALL" ? C.accent : C.textDim,
+                  border: selectedDeliveryDay === "ALL" ? `1px solid ${C.accent}` : `1px solid ${C.border2}`,
+                  borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
+                }}
+              >
+                TODOS ({filteredAndSorted.length})
+              </button>
+              {deliveryDayOptions.map((day) => {
+                const count = filteredAndSorted.filter((p) => (p.deliveryDay || "").trim().toUpperCase() === day).length;
+                const active = selectedDeliveryDay === day;
+                return (
+                  <button
+                    key={day}
+                    onClick={() => setSelectedDeliveryDay(day)}
+                    style={{
+                      background: active ? C.accentSoft : C.panel2,
+                      color: active ? C.accent : C.textDim,
+                      border: active ? `1px solid ${C.accent}` : `1px solid ${C.border2}`,
+                      borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
+                    }}
+                  >
+                    {day} ({count})
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
               <thead>
@@ -2332,7 +3259,7 @@ function ProductionDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {filteredAndSorted.map((item) => (
+                {generalTableItems.length > 0 ? generalTableItems.map((item) => (
                   <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
                     <td style={{ padding: "8px 6px" }}>
                       <span style={{ color: item.deliveryDay === "QUINTA" ? C.accent : C.purple, fontWeight: 700, fontSize: 10 }}>{item.deliveryDay}</span>
@@ -2370,7 +3297,11 @@ function ProductionDashboard() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                )) : (
+                  <tr>
+                    <td colSpan="10" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>Nenhum item encontrado{selectedDeliveryDay !== "ALL" ? ` para a entrega de ${selectedDeliveryDay}` : ""}.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
