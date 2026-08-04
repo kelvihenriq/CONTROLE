@@ -2168,17 +2168,62 @@ function ProductionDashboard() {
     return productionByMap.filter(p => !searchProd || JSON.stringify(p).toLowerCase().includes(searchProd.toLowerCase()));
   }, [productionByMap, searchProd]);
 
-  // Totais acumulados agora respeitam o mapa selecionado (e a busca), não mais a lista inteira
+  // ===== SELEÇÃO DE LINHAS (pra somar só algumas no Invoice, ex: só uma semana específica) =====
+  const [selectedProdIds, setSelectedProdIds] = useState(() => new Set());
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+
+  const toggleProdSelect = (id) => {
+    setSelectedProdIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const allVisibleSelected = filteredProduction.length > 0 && filteredProduction.every(p => selectedProdIds.has(p.id));
+  const toggleSelectAllVisible = () => {
+    setSelectedProdIds(prev => {
+      if (allVisibleSelected) {
+        const next = new Set(prev);
+        filteredProduction.forEach(p => next.delete(p.id));
+        return next;
+      }
+      const next = new Set(prev);
+      filteredProduction.forEach(p => next.add(p.id));
+      return next;
+    });
+  };
+
+  const clearProdSelection = () => setSelectedProdIds(new Set());
+
+  // Marca automaticamente todas as linhas visíveis dentro de um período de datas (ex: 2026-08-01 a 2026-08-07)
+  const selectByDateRange = () => {
+    if (!rangeFrom || !rangeTo) { alert('Preencha as duas datas (de / até) pra selecionar por período.'); return; }
+    setSelectedProdIds(prev => {
+      const next = new Set(prev);
+      filteredProduction.forEach(p => {
+        if (p.date && p.date >= rangeFrom && p.date <= rangeTo) next.add(p.id);
+      });
+      return next;
+    });
+  };
+
+  // Se houver linhas selecionadas, o Invoice/Totais usa só elas — senão, usa tudo que está filtrado (comportamento de sempre)
+  const invoiceSourceRows = selectedProdIds.size > 0 ? filteredProduction.filter(p => selectedProdIds.has(p.id)) : filteredProduction;
+
+  // Totais acumulados agora respeitam o mapa selecionado (e a busca), não mais a lista inteira —
+  // e passam a considerar a seleção de linhas quando houver alguma marcada.
   const codeTotals = useMemo(() => {
     const totals = {};
     CODE_FIELDS.forEach(f => totals[f.id] = 0);
-    filteredProduction.forEach(item => {
+    invoiceSourceRows.forEach(item => {
       CODE_FIELDS.forEach(f => {
         totals[f.id] += Number(item.codes?.[f.id]) || 0;
       });
     });
     return totals;
-  }, [filteredProduction]);
+  }, [invoiceSourceRows]);
 
   // ===== FECHAMENTO / INVOICE — preço por código (editável, sincronizado com a equipe) =====
   const [invoicePrices, setInvoicePrices] = useState(() => {
@@ -2414,10 +2459,10 @@ function ProductionDashboard() {
     const wb = new window.ExcelJS.Workbook();
     const ws = wb.addWorksheet('Invoice');
 
-    // ===== BLOCO 1: DADOS DA PRODUÇÃO (igual à Lista de Produção) =====
+    // ===== BLOCO 1: DADOS DA PRODUÇÃO (igual à Lista de Produção — respeita a seleção de linhas, se houver) =====
     // ----- LINHA 1: TOTAIS -----
     const totalsRowData = new Array(totalCols).fill('');
-    totalsRowData[0] = `TOTAIS ${selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`} -->`;
+    totalsRowData[0] = `TOTAIS ${selectedProdIds.size > 0 ? `(${selectedProdIds.size} LINHA(S) SELECIONADA(S))` : (selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`)} -->`;
     CODE_FIELDS.forEach((f, i) => { totalsRowData[nMain + i] = codeTotals[f.id] || 0; });
     totalsRowData[totalCols - 1] = 'AUTOMÁTICO';
     ws.getRow(1).values = totalsRowData;
@@ -2427,7 +2472,7 @@ function ProductionDashboard() {
     ws.getRow(2).values = headers;
 
     // ----- LINHAS 3+: DADOS -----
-    filteredProduction.forEach((item, idx) => {
+    invoiceSourceRows.forEach((item, idx) => {
       const asbuiltText = computeAsbuiltFormat(item.codes);
       ws.getRow(3 + idx).values = [
         item.daily || '', item.pendings || '', item.date || '', item.map || '', item.location || '',
@@ -2437,7 +2482,7 @@ function ProductionDashboard() {
       ];
     });
 
-    const lastDataRow = 2 + filteredProduction.length;
+    const lastDataRow = 2 + invoiceSourceRows.length;
 
     // ----- CORES DO BLOCO 1 -----
     const mainHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B5E20' } };
@@ -2853,21 +2898,42 @@ function ProductionDashboard() {
       {activeTab === "PRODUCTION_LIST" && (
         <div style={{ padding: "20px" }}>
           <Panel title={`LISTA DE PRODUÇÃO COM FORMATO AUTOMÁTICO DE AS-BUILT ${selectedMapProd === "ALL" ? "— TODOS OS MAPAS" : `— MAPA ${selectedMapProd}`}`} right={
-            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
-              <Search size={12} color={C.textFaint} />
-              <input placeholder="Buscar na produção..." value={searchProd} onChange={(e) => setSearchProd(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 160 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
+                <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700 }}>DE</span>
+                <input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none" }} />
+                <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700 }}>ATÉ</span>
+                <input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none" }} />
+                <button onClick={selectByDateRange} title="Marca automaticamente as linhas visíveis dentro desse período" style={{ background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 4, padding: "4px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                  Selecionar Período
+                </button>
+              </div>
+              {selectedProdIds.size > 0 && (
+                <button onClick={clearProdSelection} style={{ display: "flex", alignItems: "center", gap: 4, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "6px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                  <X size={11} /> Limpar Seleção ({selectedProdIds.size})
+                </button>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
+                <Search size={12} color={C.textFaint} />
+                <input placeholder="Buscar na produção..." value={searchProd} onChange={(e) => setSearchProd(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 160 }} />
+              </div>
             </div>
           }>
             <div style={{ fontSize: 10.5, color: C.textDim, lineHeight: 1.5, marginBottom: 10 }}>
               💡 Clique em <strong style={{ color: C.accent }}>"Copiar"</strong> na coluna ASBUILT (GERADO) e depois vá na aba <strong style={{ color: C.purple }}>Automação</strong>, clique em "Adicionar Caixa Manual", clique no ponto do mapa e cole (Ctrl+V) — sem precisar de IA nem chave de API.
+              {selectedProdIds.size > 0 && (
+                <span style={{ display: "block", marginTop: 4, color: C.accent, fontWeight: 700 }}>
+                  ✓ {selectedProdIds.size} linha(s) marcada(s) — o Invoice/Totais abaixo estão somando só essas linhas.
+                </span>
+              )}
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
                 <thead>
                   {/* TOTAIS DO CÓDIGO NO TOPO */}
                   <tr style={{ background: "rgba(0, 212, 255, 0.15)", color: C.accent, fontWeight: 800, textAlign: "center" }}>
-                    <td colSpan="9" style={{ padding: "8px", textAlign: "right", letterSpacing: 1 }}>
-                      TOTAIS {selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`} --&gt;
+                    <td colSpan="10" style={{ padding: "8px", textAlign: "right", letterSpacing: 1 }}>
+                      TOTAIS {selectedProdIds.size > 0 ? `(${selectedProdIds.size} LINHA(S) SELECIONADA(S))` : (selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`)} --&gt;
                     </td>
                     {CODE_FIELDS.map(f => (
                       <td key={f.id} style={{ padding: "8px", border: `1px solid ${C.border2}`, color: C.amber }}>
@@ -2880,6 +2946,9 @@ function ProductionDashboard() {
 
                   {/* CABEÇALHOS */}
                   <tr style={{ background: C.panel2, color: C.text, textAlign: "center", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 10, fontWeight: 700 }}>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>
+                      <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} title="Selecionar/desmarcar todas as linhas visíveis" style={{ cursor: "pointer" }} />
+                    </th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DAILY</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
@@ -2905,14 +2974,19 @@ function ProductionDashboard() {
                 <tbody>
                   {filteredProduction.map((item) => {
                     const asbuiltText = computeAsbuiltFormat(item.codes);
+                    const isSelected = selectedProdIds.has(item.id);
                     return (
-                      <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}`, textAlign: "center" }}>
+                      <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}`, textAlign: "center", background: isSelected ? "rgba(0, 212, 255, 0.08)" : "transparent" }}>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
+                          <input type="checkbox" checked={isSelected} onChange={() => toggleProdSelect(item.id)} style={{ cursor: "pointer" }} />
+                        </td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.daily || '—'}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.amber, fontWeight: 700 }}>{item.pendings || '—'}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700 }}>{item.date}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text }}>{item.map}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.location}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700 }}>{item.splice}</td>
+
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.accent }}>{item.name}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.type}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.typeEnd}</td>
@@ -2960,7 +3034,7 @@ function ProductionDashboard() {
 
           {/* FECHAMENTO / INVOICE — soma dos códigos x preço unitário */}
           <Panel
-            title={`FECHAMENTO / INVOICE ${selectedMapProd === "ALL" ? "— TODOS OS MAPAS" : `— MAPA ${selectedMapProd}`}`}
+            title={`FECHAMENTO / INVOICE ${selectedProdIds.size > 0 ? `— ${selectedProdIds.size} LINHA(S) SELECIONADA(S)` : (selectedMapProd === "ALL" ? "— TODOS OS MAPAS" : `— MAPA ${selectedMapProd}`)}`}
             right={
               <button onClick={exportInvoiceXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.purple, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
                 <Download size={14} /> Exportar Invoice (.XLSX)
