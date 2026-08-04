@@ -598,14 +598,23 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
 
   const generateRange = (groupId) => {
     const group = data.groups.find(g => g.id === groupId);
-    const fromStr = prompt(`Gerar faixa — número inicial (ex: 1):`, '1');
-    if (fromStr === null) return;
-    const toStr = prompt(`Número final (ex: 30):`, '30');
-    if (toStr === null) return;
-    const from = parseInt(fromStr, 10);
-    const to = parseInt(toStr, 10);
-    if (isNaN(from) || isNaN(to) || to < from) { alert('Faixa inválida.'); return; }
-    if (to - from > 500) { alert('Faixa grande demais (máximo 500 itens por vez).'); return; }
+
+    // Descobre o maior número já usado nos itens desse grupo (ex: se já tem "FT 015",
+    // continua a partir do 16) — assim não precisa dizer "de/até", só a quantidade.
+    let lastNum = 0;
+    group.items.forEach((it) => {
+      const m = it.code.match(/(\d+)\s*$/);
+      if (m) lastNum = Math.max(lastNum, parseInt(m[1], 10));
+    });
+
+    const qtyStr = prompt(`Quantos itens "${group.prefix}" você quer adicionar?\n(vai gerar de ${group.prefix} ${padNumber(lastNum + 1, 3)} até ${group.prefix} ${padNumber(lastNum + 20, 3)}, por exemplo, se digitar 20)`, '20');
+    if (qtyStr === null) return;
+    const qty = parseInt(qtyStr, 10);
+    if (isNaN(qty) || qty <= 0) { alert('Quantidade inválida.'); return; }
+    if (qty > 500) { alert('Quantidade grande demais (máximo 500 itens por vez).'); return; }
+
+    const from = lastNum + 1;
+    const to = lastNum + qty;
     const width = String(to).length >= 3 ? String(to).length : 3;
     const newItems = [];
     for (let n = from; n <= to; n++) {
@@ -777,7 +786,7 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => addSingleItem(g.id)} style={{ flex: 1, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ Item</button>
-                  <button onClick={() => generateRange(g.id)} style={{ flex: 1, background: "transparent", color: C.purple, border: `1px dashed ${C.purple}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ Faixa</button>
+                  <button onClick={() => generateRange(g.id)} title="Gera vários itens de uma vez, só perguntando a quantidade" style={{ flex: 1, background: "transparent", color: C.purple, border: `1px dashed ${C.purple}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ Quantidade</button>
                 </div>
               </div>
             ))}
