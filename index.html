@@ -232,7 +232,7 @@ const CODE_FIELDS = [
   { id: 'FS16', label: 'FS16' },
   { id: 'FS04', label: 'FS04' },
   { id: 'AS24', label: 'AS24' },
-  { id: 'MC01', label: 'MC01' }
+  { id: 'MC01A', label: 'MC01A' }
 ];
 
 // Dados Iniciais da Produção
@@ -248,7 +248,7 @@ const INITIAL_PRODUCTION = [
     name: 'ROBSON',
     type: 'AERIAL',
     typeEnd: 'END',
-    codes: { US01: '', FS01: '', FS02: 48, FS03: '', FS07A: '', FS08: '', FS16: 1, FS04: '', MC01: '' }
+    codes: { US01: '', FS01: '', FS02: 48, FS03: '', FS07A: '', FS08: '', FS16: 1, FS04: '', MC01A: '' }
   },
   {
     id: 'prod-2',
@@ -261,9 +261,26 @@ const INITIAL_PRODUCTION = [
     name: 'ROBSON',
     type: 'AERIAL',
     typeEnd: 'END',
-    codes: { US01: 0, FS01: 5, FS02: '', FS03: '', FS07A: '', FS08: '', FS16: 1, FS04: '', MC01: '' }
+    codes: { US01: 0, FS01: 5, FS02: '', FS03: '', FS07A: '', FS08: '', FS16: 1, FS04: '', MC01A: '' }
   }
 ];
+
+// Migração: o código que era chamado "MC01" foi renomeado pra "MC01A" (nome certo).
+// Isso pega registros antigos que ainda tenham valor salvo em codes.MC01 e move pra codes.MC01A,
+// sem perder o que já foi preenchido.
+function migrateProductionCodes(list) {
+  if (!Array.isArray(list)) return list;
+  let changed = false;
+  const next = list.map((item) => {
+    if (item?.codes && item.codes.MC01 !== undefined && item.codes.MC01 !== '' && !item.codes.MC01A) {
+      changed = true;
+      const { MC01, ...rest } = item.codes;
+      return { ...item, codes: { ...rest, MC01A: MC01 } };
+    }
+    return item;
+  });
+  return changed ? next : list;
+}
 
 function computeAsbuiltFormat(codes = {}) {
   const parts = [];
@@ -1949,7 +1966,7 @@ function ProductionDashboard() {
   const [productionList, setProductionList] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY_PRODUCTION);
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error("Erro ao carregar produção", e); }
+      try { return migrateProductionCodes(JSON.parse(saved)); } catch (e) { console.error("Erro ao carregar produção", e); }
     }
     return INITIAL_PRODUCTION;
   });
@@ -1996,7 +2013,7 @@ function ProductionDashboard() {
       console.error('Erro ao salvar lista de produção:', e);
     }
   }, [productionList]);
-  useCloudSync('production_list', [productionList], () => productionList, (v) => setProductionList(v));
+  useCloudSync('production_list', [productionList], () => productionList, (v) => setProductionList(migrateProductionCodes(v)));
 
   // Grava automaticamente no localStorage sempre que 'projects' for alterado
   useEffect(() => {
@@ -2310,7 +2327,7 @@ function ProductionDashboard() {
       type: r.type || "AERIAL",
       typeEnd: r.typeEnd || "END",
       codes: {
-        US01: '', FS01: '', FS02: '', FS03: '', FS14: '', FS07A: '', FS08: '', FS16: '', FS04: '', AS24: '', MC01: '',
+        US01: '', FS01: '', FS02: '', FS03: '', FS14: '', FS07A: '', FS08: '', FS16: '', FS04: '', AS24: '', MC01A: '',
         ...(r.codes || {})
       }
     }));
@@ -2417,12 +2434,18 @@ function ProductionDashboard() {
     ws.autoFilter = `A2:${colLetter(totalCols)}2`;
 
     // ===== ADICIONA A(S) ABA(S) DE PENDINGS NO MESMO ARQUIVO =====
+    // A comparação ignora maiúsculas/minúsculas e espaços nas pontas, pra não depender de
+    // ter digitado o nome do mapa EXATAMENTE igual nas duas abas (Produção e Pendings).
+    const normalizeMapName = (s) => (s || '').trim().toUpperCase();
     if (selectedMapProd === "ALL") {
       Object.keys(pendingsByMap).sort().forEach((mapName) => {
         buildPendingsSheet(wb, mapName, pendingsByMap[mapName]);
       });
-    } else if (pendingsByMap[selectedMapProd]) {
-      buildPendingsSheet(wb, selectedMapProd, pendingsByMap[selectedMapProd]);
+    } else {
+      const matchKey = Object.keys(pendingsByMap).find((k) => normalizeMapName(k) === normalizeMapName(selectedMapProd));
+      if (matchKey) {
+        buildPendingsSheet(wb, matchKey, pendingsByMap[matchKey]);
+      }
     }
 
     const buffer = await wb.xlsx.writeBuffer();
@@ -3673,7 +3696,7 @@ function ProductionModal({ initial, onClose, onSave }) {
     name: "",
     type: "AERIAL",
     typeEnd: "END",
-    codes: { US01: '', FS01: '', FS02: '', FS03: '', FS07A: '', FS08: '', FS16: '', FS04: '', MC01: '' }
+    codes: { US01: '', FS01: '', FS02: '', FS03: '', FS07A: '', FS08: '', FS16: '', FS04: '', MC01A: '' }
   });
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
