@@ -289,6 +289,7 @@ const Search = (p) => <Icon {...p}><circle cx="11" cy="11" r="7" /><line x1="21"
 const Edit2 = (p) => <Icon {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></Icon>;
 const Trash2 = (p) => <Icon {...p}><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Icon>;
 const CheckCircle = (p) => <Icon {...p}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></Icon>;
+const ClipboardPaste = (p) => <Icon {...p}><rect x="8" y="2" width="8" height="4" rx="1" ry="1" /><path d="M16 4h2a2 2 0 0 1 2 2v3" /><path d="M21 14H11" /><path d="M15 10l-4 4 4 4" /><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-3" /></Icon>;
 const FileSpreadsheet = (p) => <Icon {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="16" y2="17" /></Icon>;
 const AlertTriangle = (p) => <Icon {...p}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></Icon>;
 const Calendar = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></Icon>;
@@ -1954,6 +1955,7 @@ function ProductionDashboard() {
   });
   const [searchProd, setSearchProd] = useState("");
   const [showProdModal, setShowProdModal] = useState(false);
+  const [showPasteImportModal, setShowPasteImportModal] = useState(false);
   const [editingProd, setEditingProd] = useState(null);
   const [selectedMapProd, setSelectedMapProd] = useState("ALL");
   const [copiedRowId, setCopiedRowId] = useState(null);
@@ -2235,6 +2237,40 @@ function ProductionDashboard() {
     if (confirm("Deseja remover este registro de produção?")) {
       setProductionList(prev => prev.filter(p => p.id !== id));
     }
+  };
+
+  // Apaga todos os registros do mapa atualmente selecionado no filtro
+  const handleDeleteCurrentMapProd = () => {
+    if (selectedMapProd === "ALL") return;
+    const count = productionList.filter(p => (p.map || "SEM MAPA").trim() === selectedMapProd || (!p.map && selectedMapProd === "SEM MAPA")).length;
+    if (count === 0) return;
+    if (!confirm(`Limpar (apagar) TODOS os ${count} registro(s) do mapa "${selectedMapProd}"? Essa ação não pode ser desfeita.`)) return;
+    setProductionList(prev => prev.filter(p => !((p.map || "SEM MAPA").trim() === selectedMapProd || (!p.map && selectedMapProd === "SEM MAPA"))));
+    setSelectedMapProd("ALL");
+  };
+
+  // Recebe as linhas já coladas do Excel/Sheets (DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE)
+  // e cria um registro de produção pra cada uma, com os códigos em branco pra preencher depois.
+  const handleImportPastedRows = (rows) => {
+    if (!rows || rows.length === 0) return;
+    const newItems = rows.map((r) => ({
+      id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      daily: "",
+      pendings: "NO HUNG",
+      date: r.date || "",
+      map: r.map || "",
+      location: r.location || "",
+      splice: r.splice || "",
+      name: r.name || "",
+      type: r.type || "AERIAL",
+      typeEnd: r.typeEnd || "END",
+      codes: {
+        US01: '', FS01: '', FS02: '', FS03: '', FS14: '', FS07A: '', FS08: '', FS16: '', FS04: '', AS24: '', MC01: '',
+        ...(r.codes || {})
+      }
+    }));
+    setProductionList(prev => [...prev, ...newItems]);
+    setShowPasteImportModal(false);
   };
 
   // ===== EXPORTAR .XLSX COM CORES (igual ao padrão usado na planilha do Google Sheets) =====
@@ -2788,13 +2824,25 @@ function ProductionDashboard() {
               <button onClick={exportProdXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.purple, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
                 <Download size={14} /> Exportar {selectedMapProd === "ALL" ? "Tudo" : "Mapa Atual"} (.XLSX Colorido)
               </button>
+              <button onClick={() => setShowPasteImportModal(true)} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                <ClipboardPaste size={14} /> Colar do Excel
+              </button>
               <button onClick={() => { setEditingProd(null); setShowProdModal(true); }} style={{ display: "flex", alignItems: "center", gap: 6, background: C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
                 <Plus size={14} /> Novo Registro de Produção
               </button>
+              {selectedMapProd !== "ALL" && (
+                <button onClick={handleDeleteCurrentMapProd} title={`Apaga todos os registros do mapa ${selectedMapProd}`} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  <RotateCcw size={13} /> Limpar Mapa
+                </button>
+              )}
             </>
           )}
         </div>
       </div>
+
+      {showPasteImportModal && (
+        <PasteImportModal onClose={() => setShowPasteImportModal(false)} onImport={handleImportPastedRows} />
+      )}
 
       {activeTab === "AUTOMACAO" && <AutomacaoMapaTab />}
 
@@ -3375,6 +3423,167 @@ function ProductionDashboard() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ===== IMPORTAÇÃO EM MASSA (COLAR DO EXCEL) NA ABA DE PRODUÇÃO =====
+// Aceita datas como 07/31/26, 7/31/2026, ou até com typo de barra dupla (08//02/26)
+function parsePastedDate(raw) {
+  if (!raw) return "";
+  const digits = String(raw).match(/\d+/g);
+  if (!digits || digits.length < 3) return "";
+  let [a, b, c] = digits;
+  let month = parseInt(a, 10);
+  let day = parseInt(b, 10);
+  let year = parseInt(c, 10);
+  if (year < 100) year += 2000;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function splitPastedCells(line) {
+  let cells = line.split('\t');
+  if (cells.length < 2) cells = line.split(/\s{2,}/);
+  return cells.map((c) => (c || '').trim());
+}
+
+// Transforma o texto colado (DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE [+ códigos opcionais])
+// em linhas prontas. Ignora automaticamente cabeçalho, linhas em branco e separadores (ex: "END
+// INVOICE"), já que essas não têm uma data válida na primeira coluna.
+//
+// Se vier colunas extras depois da 7ª (códigos tipo US01, FS01, FS02...), elas também são
+// importadas: se a 1ª linha colada tiver os nomes dos códigos como cabeçalho, usa isso pra saber
+// qual coluna é qual código (funciona em qualquer ordem); se não tiver cabeçalho reconhecível,
+// assume a ordem padrão dos códigos do sistema (a mesma da Lista de Produção).
+function parsePastedProductionRows(text) {
+  if (!text) return [];
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length === 0) return [];
+
+  let codeColumnMap = null; // { índiceDaColuna: idDoCódigo }
+  let startIdx = 0;
+  const firstCells = splitPastedCells(lines[0]);
+  const isHeaderRow = /^date$/i.test(firstCells[0] || '') ||
+    firstCells.slice(7).some((c) => CODE_FIELDS.some((f) => f.id.toUpperCase() === (c || '').toUpperCase()));
+
+  if (isHeaderRow) {
+    codeColumnMap = {};
+    firstCells.forEach((cellText, idx) => {
+      if (idx < 7) return;
+      const match = CODE_FIELDS.find((f) => f.id.toUpperCase() === (cellText || '').toUpperCase());
+      if (match) codeColumnMap[idx] = match.id;
+    });
+    startIdx = 1;
+  }
+
+  const rows = [];
+  for (let i = startIdx; i < lines.length; i++) {
+    const cells = splitPastedCells(lines[i]);
+    const [dateRaw, map, location, splice, name, type, typeEnd] = cells;
+    if (!dateRaw) continue;
+    if (/^date$/i.test(dateRaw)) continue; // linha de cabeçalho colada junto (sem ter sido detectada como a 1ª)
+    const date = parsePastedDate(dateRaw);
+    if (!date) continue; // sem data válida = separador/rótulo, ignora
+
+    const codes = {};
+    if (codeColumnMap) {
+      Object.keys(codeColumnMap).forEach((idxStr) => {
+        const idx = parseInt(idxStr, 10);
+        const val = (cells[idx] || '').trim();
+        if (val !== '') codes[codeColumnMap[idx]] = val;
+      });
+    } else if (cells.length > 7) {
+      // Sem cabeçalho identificável: assume a ordem padrão dos códigos do sistema
+      CODE_FIELDS.forEach((f, offset) => {
+        const val = (cells[7 + offset] || '').trim();
+        if (val !== '') codes[f.id] = val;
+      });
+    }
+
+    rows.push({
+      date, map: map || '', location: location || '', splice: splice || '',
+      name: name || '', type: type || 'AERIAL', typeEnd: typeEnd || 'END', codes
+    });
+  }
+  return rows;
+}
+
+function PasteImportModal({ onClose, onImport }) {
+  const [text, setText] = useState('');
+  const rows = useMemo(() => parsePastedProductionRows(text), [text]);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}>
+      <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 740, maxHeight: "90vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+          <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>Colar Dados do Excel</div>
+          <X size={16} color={C.textDim} style={{ cursor: "pointer" }} onClick={onClose} />
+        </div>
+
+        <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+          Copia (Ctrl+C) as colunas <strong style={{ color: C.text }}>DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE</strong> direto do Excel/Google Sheets — e se quiser, inclui também as colunas de código (<strong style={{ color: C.text }}>US01, FS01, FS02...</strong>) que elas são preenchidas sozinhas.
+          Se você copiar junto a linha de cabeçalho (com os nomes das colunas), o sistema usa ela pra saber qual coluna é qual código, então funciona mesmo se a ordem for diferente da do sistema.
+          Sem cabeçalho, ele assume a ordem padrão dos códigos. Linhas sem data válida (cabeçalho perdido, "END INVOICE" etc.) são ignoradas automaticamente.
+        </div>
+
+        <textarea
+          autoFocus
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={"Cole aqui as linhas copiadas do Excel...\nEx: 08/03/26    JS98E    SE 025    3    ODAIR GOMES    AERIAL    RING CUT"}
+          style={{ width: "100%", minHeight: 160, background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 10, fontSize: 11, fontFamily: "'JetBrains Mono', monospace", outline: "none", resize: "vertical", boxSizing: "border-box" }}
+        />
+
+        <div style={{ fontSize: 11, fontWeight: 700, color: rows.length > 0 ? C.green : C.textFaint }}>
+          {rows.length > 0 ? `✓ ${rows.length} linha(s) detectada(s) e prontas pra importar.` : "Nenhuma linha válida detectada ainda — cola os dados acima."}
+        </div>
+
+        {rows.length > 0 && (
+          <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${C.border2}`, borderRadius: 6 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
+              <thead>
+                <tr style={{ background: C.panel2 }}>
+                  {["DATA", "MAPA", "LOCAL", "SPLICE", "NOME", "TYPE", "TYPE", "CÓDIGOS"].map((h) => (
+                    <th key={h} style={{ padding: "6px 8px", textAlign: "left", color: C.textDim, borderBottom: `1px solid ${C.border2}`, position: "sticky", top: 0, background: C.panel2 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 50).map((r, i) => {
+                  const codeEntries = Object.entries(r.codes || {}).filter(([, v]) => v !== '');
+                  return (
+                    <tr key={i} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{r.date}</td>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{r.map}</td>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{r.location}</td>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{r.splice}</td>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{r.name}</td>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{r.type}</td>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{r.typeEnd}</td>
+                      <td style={{ padding: "5px 8px", color: codeEntries.length > 0 ? C.accent : C.textFaint, fontWeight: codeEntries.length > 0 ? 700 : 400 }}>
+                        {codeEntries.length > 0 ? codeEntries.map(([k, v]) => `${k}:${v}`).join(', ') : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {rows.length > 50 && <div style={{ padding: 8, fontSize: 10, color: C.textFaint, textAlign: "center" }}>+ {rows.length - 50} linha(s) a mais...</div>}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
+          <button
+            disabled={rows.length === 0}
+            onClick={() => onImport(rows)}
+            style={{ background: rows.length > 0 ? C.accent : C.panel2, color: rows.length > 0 ? "#000" : C.textFaint, border: "none", borderRadius: 5, padding: "8px 18px", fontSize: 11, fontWeight: 800, cursor: rows.length > 0 ? "pointer" : "not-allowed" }}
+          >
+            Importar {rows.length > 0 ? `${rows.length} Registro(s)` : ""}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
