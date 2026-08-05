@@ -387,6 +387,71 @@ function StatRow({ label, value, valueColor, sub }) {
   );
 }
 
+function CollaboratorCard({ c }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasMaps = (c.asbuiltMaps.length + c.workbookMaps.length + c.invoiceMaps.length) > 0;
+
+  const MapList = ({ label, color, maps }) => {
+    if (maps.length === 0) return null;
+    return (
+      <div style={{ marginBottom: 6 }}>
+        <div style={{ fontSize: 9, color, fontWeight: 700, marginBottom: 2 }}>{label} ({maps.length})</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {maps.map((m, i) => (
+            <div key={i} style={{ fontSize: 10, color: C.text, background: C.panel, border: `1px solid ${C.borderSoft}`, borderRadius: 4, padding: "3px 6px" }}>
+              {m}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.accent }}>{c.name}</div>
+        <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 8px", borderRadius: 12, fontWeight: 800, fontSize: 11 }}>
+          +{c.updatesCount} PTS
+        </span>
+      </div>
+
+      <StatRow label="Atualizações Concluídas" value={c.updatesCount} valueColor={C.green} />
+
+      <div style={{ margin: "8px 0", borderTop: `1px dashed ${C.border2}`, paddingTop: 6 }}>
+        <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>Detalhamento por Etapa:</div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.text }}>
+          <span>As-Built: <strong style={{ color: C.accent }}>{c.asbuiltCount}</strong></span>
+          <span>Workbook: <strong style={{ color: C.purple }}>{c.workbookCount}</strong></span>
+          <span>Invoice: <strong style={{ color: C.green }}>{c.invoiceCount}</strong></span>
+        </div>
+      </div>
+
+      {c.pendingOts > 0 && (
+        <StatRow label="OTs Pendentes Atribuídas" value={c.pendingOts} valueColor={C.red} />
+      )}
+
+      {hasMaps && (
+        <>
+          <button
+            onClick={() => setExpanded(e => !e)}
+            style={{ width: "100%", marginTop: 10, background: "transparent", color: C.accent, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}
+          >
+            {expanded ? "▲ Ocultar mapas atualizados" : "▼ Ver mapas atualizados"}
+          </button>
+          {expanded && (
+            <div style={{ marginTop: 8, borderTop: `1px dashed ${C.border2}`, paddingTop: 8 }}>
+              <MapList label="AS-BUILT" color={C.accent} maps={c.asbuiltMaps} />
+              <MapList label="WORKBOOK" color={C.purple} maps={c.workbookMaps} />
+              <MapList label="INVOICE" color={C.green} maps={c.invoiceMaps} />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Input(props) {
   return (
     <input {...props} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px 10px", fontSize: 11, outline: "none", fontFamily: "'JetBrains Mono', monospace", width: "100%", boxSizing: "border-box", ...(props.style || {}) }} />
@@ -402,40 +467,76 @@ function Field({ label, children }) {
   );
 }
 
-function WeeklyActivityHeatmap({ asbuiltDate, workbookDate, invoiceDate }) {
-    const abDayIdx = getCycleDayIndex(asbuiltDate);
-    const wbDayIdx = getCycleDayIndex(workbookDate);
-    const invDayIdx = getCycleDayIndex(invoiceDate);
+// Formata 'YYYY-MM-DD' -> 'DD/MM' para exibição compacta
+function formatShortDate(dateStr) {
+    if (!dateStr) return '';
+    const parts = dateStr.split('-');
+    if (parts.length !== 3) return dateStr;
+    return `${parts[2]}/${parts[1]}`;
+}
 
-    const renderRow = (title, updatedDayIdx, color) => (
+const MAX_HISTORY_DOTS_VISIBLE = 3;
+
+function UpdateHistoryRow({ title, history, color, onAddToday }) {
+    const [expanded, setExpanded] = useState(false);
+    const list = Array.isArray(history) ? history : [];
+    const hasToday = list.includes(new Date().toISOString().slice(0, 10));
+    const visible = expanded ? list : list.slice(-MAX_HISTORY_DOTS_VISIBLE);
+    const hiddenCount = list.length - visible.length;
+
+    return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-            <span style={{ fontSize: 9, color: C.textDim, width: 24, textAlign: 'right', fontWeight: 600 }}>{title}</span>
-            <div style={{ display: 'flex', gap: 2 }}>
-                {CYCLE_DAYS.map((day, index) => {
-                    let bgColor = C.panel2;
-                    let border = `1px solid ${C.border2}`;
-
-                    // Fica azul no dia da atualização E no dia seguinte (folga de 1 dia antes de
-                    // voltar a contar como "sem atualização" / transparente).
-                    const isUpdated = updatedDayIdx !== -1 && (index === updatedDayIdx || index === updatedDayIdx + 1);
-                    if (isUpdated) {
-                        bgColor = color;
-                        border = `1px solid ${color}`;
-                    }
-
-                    return (
-                        <div key={day} title={`${title}: ${day}${isUpdated ? ' (Atualizado)' : ''}`} style={{ width: 10, height: 10, background: bgColor, border: border, borderRadius: 2 }} />
-                    );
-                })}
+            <span style={{ fontSize: 9, color: C.textDim, width: 24, textAlign: 'right', fontWeight: 600, flexShrink: 0 }}>{title}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
+                {hiddenCount > 0 && (
+                    <span
+                        onClick={() => setExpanded(true)}
+                        title="Ver histórico completo"
+                        style={{ fontSize: 8.5, color: C.textFaint, cursor: 'pointer', fontWeight: 700, padding: '1px 3px' }}
+                    >
+                        +{hiddenCount}
+                    </span>
+                )}
+                {visible.length === 0 && (
+                    <span style={{ fontSize: 9, color: C.textFaint }}>—</span>
+                )}
+                {visible.map((d, i) => (
+                    <span
+                        key={d + i}
+                        title={`${title} atualizado em ${d}`}
+                        style={{
+                            fontSize: 9, fontWeight: 700, color: color, background: `${color}22`,
+                            border: `1px solid ${color}`, borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap'
+                        }}
+                    >
+                        {formatShortDate(d)}
+                    </span>
+                ))}
+                {onAddToday && (
+                    <button
+                        onClick={onAddToday}
+                        disabled={hasToday}
+                        title={hasToday ? 'Hoje já está registrado' : `Registrar atualização de hoje em ${title}`}
+                        style={{
+                            fontSize: 9, fontWeight: 800, lineHeight: 1, color: hasToday ? C.textFaint : color,
+                            background: 'transparent', border: `1px dashed ${hasToday ? C.border2 : color}`,
+                            borderRadius: 3, padding: '1px 4px', cursor: hasToday ? 'default' : 'pointer'
+                        }}
+                    >
+                        + Hoje
+                    </button>
+                )}
             </div>
         </div>
     );
+}
 
+function WeeklyActivityHeatmap({ asbuiltHistory, workbookHistory, invoiceHistory, onAddToday }) {
     return (
         <div style={{ background: C.panel2, padding: '4px 6px', borderRadius: 4, border: `1px solid ${C.borderSoft}` }}>
-            {renderRow('AB', abDayIdx, C.accent)}
-            {renderRow('WB', wbDayIdx, C.purple)}
-            {renderRow('INV', invDayIdx, C.green)}
+            <UpdateHistoryRow title="AB" history={asbuiltHistory} color={C.accent} onAddToday={onAddToday ? () => onAddToday('asbuilt') : null} />
+            <UpdateHistoryRow title="WB" history={workbookHistory} color={C.purple} onAddToday={onAddToday ? () => onAddToday('workbook') : null} />
+            <UpdateHistoryRow title="INV" history={invoiceHistory} color={C.green} onAddToday={onAddToday ? () => onAddToday('invoice') : null} />
         </div>
     );
 }
@@ -1811,12 +1912,31 @@ function ProductionDashboard() {
       }
     }
     // Migração do sistema antigo (Semana Atual/Anterior) para o novo (Semana 1-4)
+    // + Migração para histórico de datas (CICLO): se o item ainda não tem histórico,
+    // cria um a partir da data única que já existia (sem perder o que já estava lá).
     return data.map((p) => {
-      if (p.cycle === 'CURRENT_WEEK') return { ...p, cycle: 'SEMANA_1' };
-      if (p.cycle === 'PREVIOUS_WEEK') return { ...p, cycle: 'SEMANA_2' };
-      return p;
+      let migrated = { ...p };
+      if (migrated.cycle === 'CURRENT_WEEK') migrated.cycle = 'SEMANA_1';
+      if (migrated.cycle === 'PREVIOUS_WEEK') migrated.cycle = 'SEMANA_2';
+      if (!Array.isArray(migrated.asbuiltHistory)) migrated.asbuiltHistory = migrated.asbuiltDate ? [migrated.asbuiltDate] : [];
+      if (!Array.isArray(migrated.workbookHistory)) migrated.workbookHistory = migrated.workbookDate ? [migrated.workbookDate] : [];
+      if (!Array.isArray(migrated.invoiceHistory)) migrated.invoiceHistory = migrated.invoiceDate ? [migrated.invoiceDate] : [];
+      return migrated;
     });
   });
+
+  // ===== HISTÓRICO DE ATUALIZAÇÕES (CICLO) — adiciona a data de hoje na etapa escolhida =====
+  const addHistoryToday = (itemId, stage) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const historyKey = `${stage}History`; // 'asbuiltHistory' | 'workbookHistory' | 'invoiceHistory'
+    const dateKey = `${stage}Date`;
+    setProjects((prev) => prev.map((p) => {
+      if (p.id !== itemId) return p;
+      const currentHistory = Array.isArray(p[historyKey]) ? p[historyKey] : [];
+      if (currentHistory.includes(today)) return p; // já registrado hoje, não duplica
+      return { ...p, [historyKey]: [...currentHistory, today], [dateKey]: today };
+    }));
+  };
 
   // Semana atualmente "aberta" para lançamentos (as outras ficam "fechadas"/histórico)
   const [openWeek, setOpenWeek] = useState(() => {
@@ -2077,7 +2197,7 @@ function ProductionDashboard() {
   const perfCollaborators = useMemo(() => {
     const mapTechs = {};
 
-    const registerTechUpdate = (techName, stageName, isCompleted, otCount) => {
+    const registerTechUpdate = (techName, stageName, isCompleted, otCount, mapLabel) => {
       if (!techName) return;
       const key = techName.toUpperCase().trim();
 
@@ -2088,15 +2208,19 @@ function ProductionDashboard() {
           asbuiltCount: 0,
           invoiceCount: 0,
           workbookCount: 0,
-          pendingOts: 0
+          pendingOts: 0,
+          asbuiltMaps: [],
+          invoiceMaps: [],
+          workbookMaps: []
         };
       }
 
       if (isCompleted) {
         mapTechs[key].updatesCount += 1; // +1 Ponto por etapa concluída!
-        if (stageName === 'AB') mapTechs[key].asbuiltCount += 1;
-        if (stageName === 'INV') mapTechs[key].invoiceCount += 1;
-        if (stageName === 'WB') mapTechs[key].workbookCount += 1;
+        const mapName = (mapLabel || "SEM MAPA").trim();
+        if (stageName === 'AB') { mapTechs[key].asbuiltCount += 1; mapTechs[key].asbuiltMaps.push(mapName); }
+        if (stageName === 'INV') { mapTechs[key].invoiceCount += 1; mapTechs[key].invoiceMaps.push(mapName); }
+        if (stageName === 'WB') { mapTechs[key].workbookCount += 1; mapTechs[key].workbookMaps.push(mapName); }
       } else {
         mapTechs[key].pendingOts += otCount || 0;
       }
@@ -2107,9 +2231,9 @@ function ProductionDashboard() {
       const isInvDone = p.invoiceStatus === "SIM" || p.invoiceStatus === "OK";
       const isWbDone = p.workbookStatus === "SIM" || p.workbookStatus === "OK";
 
-      registerTechUpdate(p.asbuiltTech, 'AB', isAbDone, p.otCount);
-      registerTechUpdate(p.invoiceTech, 'INV', isInvDone, 0);
-      registerTechUpdate(p.workbookTech, 'WB', isWbDone, 0);
+      registerTechUpdate(p.asbuiltTech, 'AB', isAbDone, p.otCount, p.map);
+      registerTechUpdate(p.invoiceTech, 'INV', isInvDone, 0, p.map);
+      registerTechUpdate(p.workbookTech, 'WB', isWbDone, 0, p.map);
     });
 
     return Object.values(mapTechs).sort((a, b) => b.updatesCount - a.updatesCount);
@@ -2476,7 +2600,7 @@ function ProductionDashboard() {
       alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
       return;
     }
-    const mainHeaders = ["DAILY", "PENDINGS", "DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE"];
+    const mainHeaders = ["DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE2"];
     const codeHeaders = CODE_FIELDS.map((f) => f.label);
     const headers = [...mainHeaders, ...codeHeaders, "ASBUILT (GERADO)"];
     const nMain = mainHeaders.length;
@@ -2492,13 +2616,23 @@ function ProductionDashboard() {
     const ws = wb.addWorksheet('Invoice');
 
     // ===== BLOCO 1: DADOS DA PRODUÇÃO (igual à Lista de Produção — respeita a seleção de linhas, se houver) =====
-    // ----- LINHA 1: TOTAIS -----
-    const totalsRowData = new Array(totalCols).fill('');
-    totalsRowData[0] = `TOTAIS ${selectedProdIds.size > 0 ? `(${selectedProdIds.size} LINHA(S) SELECIONADA(S))` : (selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`)} -->`;
-    CODE_FIELDS.forEach((f, i) => { totalsRowData[nMain + i] = codeTotals[f.id] || 0; });
-    totalsRowData[totalCols - 1] = 'AUTOMÁTICO';
-    ws.getRow(1).values = totalsRowData;
-    ws.mergeCells(1, 1, 1, nMain);
+    // ----- CORES DO BLOCO 1 (tema navy / azul-claro, no padrão do modelo de referência) -----
+    const titleFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    const headerFillMain = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+    const bandFillA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC9D6EC' } };
+    const bandFillB = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFAEC6E8' } };
+    const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
+
+    // ----- LINHA 1: TÍTULO "N: 0000 / DAY: MM-DD-YY" (mesclado por toda a largura) -----
+    const todayFmt = (() => {
+      const d = new Date();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const yy = String(d.getFullYear()).slice(-2);
+      return `${mm}-${dd}-${yy}`;
+    })();
+    ws.getRow(1).getCell(1).value = `N: 0000 / DAY: ${todayFmt}`;
+    ws.mergeCells(1, 1, 1, totalCols);
 
     // ----- LINHA 2: CABEÇALHOS -----
     ws.getRow(2).values = headers;
@@ -2507,7 +2641,7 @@ function ProductionDashboard() {
     invoiceSourceRows.forEach((item, idx) => {
       const asbuiltText = computeAsbuiltFormat(item.codes);
       ws.getRow(3 + idx).values = [
-        item.daily || '', item.pendings || '', item.date || '', item.map || '', item.location || '',
+        item.date || '', item.map || '', item.location || '',
         item.splice || '', item.name || '', item.type || '', item.typeEnd || '',
         ...CODE_FIELDS.map((f) => item.codes?.[f.id] || ''),
         asbuiltText
@@ -2516,36 +2650,30 @@ function ProductionDashboard() {
 
     const lastDataRow = 2 + invoiceSourceRows.length;
 
-    // ----- CORES DO BLOCO 1 -----
-    const mainHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B5E20' } };
-    const codeHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF33691E' } };
-    const totalsFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB3E5FC' } };
-    const dateMapLocFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } };
-    const codeDataFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00FFFF' } };
-    const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
+    // Linha de título
+    const titleCell = ws.getRow(1).getCell(1);
+    titleCell.fill = titleFill;
+    titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 13 };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    titleCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
 
-    for (let c = 1; c <= totalCols; c++) {
-      const cell = ws.getRow(1).getCell(c);
-      cell.fill = totalsFill;
-      cell.font = { bold: true, color: { argb: 'FF0D47A1' } };
-      cell.alignment = { horizontal: c === 1 ? 'right' : 'center', vertical: 'middle' };
-      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    }
+    // Linha de cabeçalhos (branco, texto preto em negrito)
     for (let c = 1; c <= totalCols; c++) {
       const cell = ws.getRow(2).getCell(c);
-      const isCode = c > nMain && c <= nMain + nCode;
-      cell.fill = isCode ? codeHeaderFill : mainHeaderFill;
-      cell.font = { bold: true, color: { argb: isCode ? 'FFC6E0B4' : 'FFFFFFFF' } };
+      cell.fill = headerFillMain;
+      cell.font = { bold: true, color: { argb: 'FF000000' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     }
+
+    // Linhas de dados — faixas alternadas de azul (zebra), uniformes em todas as colunas
     for (let r = 3; r <= lastDataRow; r++) {
+      const band = (r % 2 === 0) ? bandFillA : bandFillB;
       for (let c = 1; c <= totalCols; c++) {
         const cell = ws.getRow(r).getCell(c);
+        cell.fill = band;
         cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        if (c >= 3 && c <= 5) cell.fill = dateMapLocFill;
-        if (c > nMain && c <= nMain + nCode) cell.fill = codeDataFill;
       }
       const asbuiltCell = ws.getRow(r).getCell(totalCols);
       asbuiltCell.alignment = { horizontal: 'left', vertical: 'middle' };
@@ -2594,10 +2722,10 @@ function ProductionDashboard() {
       labelCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     });
 
-    // ----- TABELA VERTICAL (CÓDIGO / $), à direita da mini-tabela, com SUBTOTAL no final -----
-    const vStartRow = miniStartRow;
-    const codeCol = miniStartCol + nCode + 3;
-    const valueCol = codeCol + 1;
+    // ----- TABELA VERTICAL (CÓDIGO / $), logo abaixo da mini-tabela, alinhada para terminar na última coluna (ASBUILT) -----
+    const vStartRow = miniStartRow + 4; // 1 linha em branco de respiro após PRICE
+    const valueCol = totalCols;         // coluna de valores termina alinhada com a última coluna (ASBUILT)
+    const codeCol = totalCols - 1;      // coluna de rótulos (código) logo à esquerda
     invoiceRows.forEach((r, idx) => {
       const row = ws.getRow(vStartRow + idx);
       row.getCell(codeCol).value = r.label;
@@ -2612,7 +2740,7 @@ function ProductionDashboard() {
     });
 
     const subtotalRow = vStartRow + invoiceRows.length + 2;
-    ws.getRow(subtotalRow).getCell(codeCol).value = 'SUBTOTAL';
+    ws.getRow(subtotalRow).getCell(codeCol).value = 'TOTAL';
     ws.getRow(subtotalRow).getCell(valueCol).value = invoiceGrandTotal;
     ws.getRow(subtotalRow).getCell(codeCol).fill = subtotalFill;
     ws.getRow(subtotalRow).getCell(valueCol).fill = subtotalFill;
@@ -2624,14 +2752,13 @@ function ProductionDashboard() {
     ws.getRow(subtotalRow).getCell(codeCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     ws.getRow(subtotalRow).getCell(valueCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
 
-    // Larguras de coluna
+    // Larguras de coluna (DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE2, códigos..., ASBUILT)
     ws.columns = headers.map((h, i) => ({
-      width: i < nMain ? (i === 4 ? 14 : 11) : (i < nMain + nCode ? 9 : 22)
+      width: i < nMain ? (i === 2 ? 32 : (i === 4 ? 16 : 11)) : (i < nMain + nCode ? 9 : 22)
     }));
-    ws.getColumn(codeCol).width = 14;
-    ws.getColumn(valueCol).width = 16;
+    ws.getColumn(valueCol).width = Math.max(ws.getColumn(valueCol).width || 0, 16);
 
-    // Congela as duas primeiras linhas (totais + cabeçalho) e ativa o filtro no bloco de dados
+    // Congela as duas primeiras linhas (título + cabeçalho) e ativa o filtro no bloco de dados
     ws.views = [{ state: 'frozen', ySplit: 2 }];
     ws.autoFilter = `A2:${colLetter(totalCols)}2`;
 
@@ -3235,29 +3362,7 @@ function ProductionDashboard() {
             <Panel title="Pontuação de Produtividade (Cada Etapa Atualizada = +1 Ponto)">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
                 {perfCollaborators.length > 0 ? perfCollaborators.map(c => (
-                  <div key={c.name} style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                      <div style={{ fontSize: 13, fontWeight: 800, color: C.accent }}>{c.name}</div>
-                      <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 8px", borderRadius: 12, fontWeight: 800, fontSize: 11 }}>
-                        +{c.updatesCount} PTS
-                      </span>
-                    </div>
-
-                    <StatRow label="Atualizações Concluídas" value={c.updatesCount} valueColor={C.green} />
-                    
-                    <div style={{ margin: "8px 0", borderTop: `1px dashed ${C.border2}`, paddingTop: 6 }}>
-                      <div style={{ fontSize: 9, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>Detalhamento por Etapa:</div>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.text }}>
-                        <span>As-Built: <strong style={{ color: C.accent }}>{c.asbuiltCount}</strong></span>
-                        <span>Workbook: <strong style={{ color: C.purple }}>{c.workbookCount}</strong></span>
-                        <span>Invoice: <strong style={{ color: C.green }}>{c.invoiceCount}</strong></span>
-                      </div>
-                    </div>
-
-                    {c.pendingOts > 0 && (
-                      <StatRow label="OTs Pendentes Atribuídas" value={c.pendingOts} valueColor={C.red} />
-                    )}
-                  </div>
+                  <CollaboratorCard key={c.name} c={c} />
                 )) : (
                   <div style={{ color: C.textDim, fontSize: 11 }}>Nenhum colaborador com atualizações registradas neste ciclo.</div>
                 )}
@@ -3439,9 +3544,10 @@ function ProductionDashboard() {
 
                     <td style={{ padding: "8px 6px" }}>
                       <WeeklyActivityHeatmap
-                        asbuiltDate={item.asbuiltDate}
-                        workbookDate={item.workbookDate}
-                        invoiceDate={item.invoiceDate}
+                        asbuiltHistory={item.asbuiltHistory}
+                        workbookHistory={item.workbookHistory}
+                        invoiceHistory={item.invoiceHistory}
+                        onAddToday={(stage) => addHistoryToday(item.id, stage)}
                       />
                     </td>
 
@@ -3796,6 +3902,16 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
+  const addFormHistoryToday = (stage) => {
+    const historyKey = `${stage}History`;
+    const dateKey = `${stage}Date`;
+    setForm((f) => {
+      const currentHistory = Array.isArray(f[historyKey]) ? f[historyKey] : [];
+      if (currentHistory.includes(today)) return f;
+      return { ...f, [historyKey]: [...currentHistory, today], [dateKey]: today };
+    });
+  };
+
   const handleAddOt = () => {
     const qty = parseInt(addOtInput, 10);
     if (!qty || isNaN(qty) || qty <= 0) return;
@@ -3805,13 +3921,23 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
 
   const handleAsBuiltStatusChange = (e) => {
     const val = e.target.value;
-    setForm(f => ({
-      ...f,
-      asbuiltStatus: val,
-      asbuiltDate: (val === "OK" || val === "FAZENDO") && !f.asbuiltDate ? today : f.asbuiltDate,
-      // OTs pendentes só zeram quando marcado como ATUALIZADO (OK) — "FAZENDO" mantém a fila.
-      otCount: val === "OK" ? 0 : f.otCount
-    }));
+    setForm(f => {
+      // Marcar FAZENDO ou ATUALIZADO (OK) já conta como atividade do dia no Ciclo (Sáb-Sex),
+      // sem precisar clicar manualmente em "+Hoje" depois no Controle Geral.
+      const countsAsActivity = val === "OK" || val === "FAZENDO";
+      const currentHistory = Array.isArray(f.asbuiltHistory) ? f.asbuiltHistory : [];
+      const asbuiltHistory = countsAsActivity && !currentHistory.includes(today)
+        ? [...currentHistory, today]
+        : currentHistory;
+      return {
+        ...f,
+        asbuiltStatus: val,
+        asbuiltDate: countsAsActivity && !f.asbuiltDate ? today : f.asbuiltDate,
+        asbuiltHistory,
+        // OTs pendentes só zeram quando marcado como ATUALIZADO (OK) — "FAZENDO" mantém a fila.
+        otCount: val === "OK" ? 0 : f.otCount
+      };
+    });
   };
 
   const handleWorkbookStatusChange = (e) => {
@@ -3948,9 +4074,10 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
         <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 16 }}>
             <div style={{ fontWeight: 700, color: C.textDim, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>Histórico do Ciclo (Sáb - Sex)</div>
             <WeeklyActivityHeatmap
-                asbuiltDate={form.asbuiltDate}
-                workbookDate={form.workbookDate}
-                invoiceDate={form.invoiceDate}
+                asbuiltHistory={form.asbuiltHistory}
+                workbookHistory={form.workbookHistory}
+                invoiceHistory={form.invoiceHistory}
+                onAddToday={addFormHistoryToday}
             />
         </div>
 
