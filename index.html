@@ -212,6 +212,8 @@ const WEEK_OPTIONS = [
   { id: 'SEMANA_3', label: 'Semana 3' },
   { id: 'SEMANA_4', label: 'Semana 4' }
 ];
+// Texto do cabeçalho da empresa no topo do Invoice exportado (igual ao modelo oficial).
+const COMPANY_HEADER_TEXT = "DBA STEVENS COMMUNICATIONS\n313 CINDA DR, GARNER, NC\nPHONE:+1 (919) 389-7977\nEMAIL: RYAN.STEVENS@STEVCOMMS.NET";
 const STORAGE_KEY_OPEN_WEEK = 'CONTROL_PRO_OPEN_WEEK_V1';
 const STORAGE_KEY_ARCHIVE = 'CONTROL_PRO_MONTH_ARCHIVE_V1';
 
@@ -1983,15 +1985,20 @@ function ProductionDashboard() {
   }, [archives]);
   useCloudSync('archives', [archives], () => archives, (v) => setArchives(v));
 
-  const handleResetMonth = () => {
+  const handleResetMonth = async () => {
     if (projects.length === 0) { alert('Não há itens para arquivar — a lista já está vazia.'); return; }
     const suggestion = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-    const label = window.prompt('Vamos arquivar TODOS os itens atuais (Semanas 1-4) e começar um novo mês do zero.\n\nDê um nome para o mês que está sendo arquivado:', suggestion);
+    const label = window.prompt('Vamos arquivar TODOS os itens atuais (Semanas 1-4) e começar um novo mês do zero.\n\nUm arquivo .xlsx com tudo do mês vai ser baixado automaticamente antes de resetar.\n\nDê um nome para o mês que está sendo arquivado:', suggestion);
     if (label === null) return; // cancelou
+    const finalLabel = label.trim() || suggestion;
+
+    // Baixa um .xlsx com TODOS os itens do mês (das 4 semanas) antes de arquivar/limpar
+    await exportGeneralXLSXForItems(projects, `Mes_${finalLabel.replace(/\s+/g, "_")}`);
+
     const snapshot = {
       id: 'arch-' + Date.now(),
       archivedAt: new Date().toISOString(),
-      label: label.trim() || suggestion,
+      label: finalLabel,
       projects
     };
     setArchives((prev) => [snapshot, ...prev]);
@@ -2110,6 +2117,7 @@ function ProductionDashboard() {
   const [editingItem, setEditingItem] = useState(null);
   const [modalMode, setModalMode] = useState("GENERAL"); // 'GENERAL' (Controle Geral / Novo Item) ou 'QUEUE' (Prioridade da Fila — atualização diária de AS-BUILT)
   const [perfTab, setPerfTab] = useState("PRODUCAO_SEMANA");
+  const [selectedGeneralIds, setSelectedGeneralIds] = useState(() => new Set());
 
   // ===== ABA (DASHBOARD DE CONTROLE x PRODUÇÃO & CÓDIGOS AS-BUILT) =====
   const [activeTab, setActiveTab] = useState("DASHBOARD");
@@ -2326,6 +2334,58 @@ function ProductionDashboard() {
     if (confirm("Deseja realmente remover este item do sistema?")) {
       setProjects(prev => prev.filter(p => p.id !== id));
     }
+  };
+
+  // ===== SELEÇÃO DE LINHAS NO CONTROLE GERAL (PARA COPIAR MAPAS PRA PRÓXIMA SEMANA) =====
+  const toggleGeneralSelect = (id) => {
+    setSelectedGeneralIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAllGeneralVisible = () => {
+    setSelectedGeneralIds(prev => {
+      const allSelected = generalTableItems.length > 0 && generalTableItems.every(p => prev.has(p.id));
+      if (allSelected) return new Set();
+      return new Set(generalTableItems.map(p => p.id));
+    });
+  };
+  const allGeneralVisibleSelected = generalTableItems.length > 0 && generalTableItems.every(p => selectedGeneralIds.has(p.id));
+
+  // Copia os mapas selecionados (ou, se nenhum estiver marcado, TODOS os visíveis na aba de
+  // entrega atual) para a semana seguinte, já zerados (PENDENTE), sem precisar recadastrar 1 a 1.
+  const handleCopyToNextWeek = () => {
+    const sourceItems = selectedGeneralIds.size > 0
+      ? generalTableItems.filter(p => selectedGeneralIds.has(p.id))
+      : generalTableItems;
+
+    if (sourceItems.length === 0) {
+      alert("Nenhum mapa para copiar.");
+      return;
+    }
+
+    const label = selectedGeneralIds.size > 0 ? `${sourceItems.length} mapa(s) selecionado(s)` : `TODOS os ${sourceItems.length} mapa(s) visíveis`;
+    if (!confirm(`Copiar ${label} para a semana seguinte (zerados, como PENDENTE)?`)) return;
+
+    const nextCycleOf = (cycleId) => {
+      const idx = WEEK_OPTIONS.findIndex(w => w.id === cycleId);
+      return WEEK_OPTIONS[(idx + 1) % WEEK_OPTIONS.length].id;
+    };
+
+    const copies = sourceItems.map((item, idx) => ({
+      ...item,
+      id: `item-${Date.now()}-${idx}`,
+      cycle: nextCycleOf(item.cycle || "SEMANA_1"),
+      asbuiltStatus: "PENDENTE", asbuiltDate: "", asbuiltTech: "", asbuiltHistory: [],
+      invoiceStatus: "PENDENTE", invoiceDate: "", invoiceTech: "", invoiceHistory: [],
+      workbookStatus: "PENDENTE", workbookDate: "", workbookTech: "", workbookHistory: [],
+      status: "NO_UPDATE"
+    }));
+
+    setProjects(prev => [...prev, ...copies]);
+    setSelectedGeneralIds(new Set());
+    alert(`${copies.length} mapa(s) copiado(s) para a próxima semana com sucesso!`);
   };
 
   // ===== LÓGICA DA ABA PRODUÇÃO & CÓDIGOS AS-BUILT =====
@@ -2633,7 +2693,7 @@ function ProductionDashboard() {
     }
     const mainHeaders = ["DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE2"];
     const codeHeaders = CODE_FIELDS.map((f) => f.label);
-    const headers = [...mainHeaders, ...codeHeaders, "ASBUILT (GERADO)"];
+    const headers = [...mainHeaders, ...codeHeaders];
     const nMain = mainHeaders.length;
     const nCode = codeHeaders.length;
     const totalCols = headers.length;
@@ -2642,79 +2702,109 @@ function ProductionDashboard() {
       while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
       return s;
     };
+    // Data no padrão DD-MM-AA usado no modelo (ex: 08-04-26 = 08/abril/2026)
+    const toDDMMYY = (isoDate) => {
+      if (!isoDate) return '';
+      const parts = isoDate.split('-');
+      if (parts.length !== 3) return isoDate;
+      const [y, m, d] = parts;
+      return `${d}-${m}-${y.slice(-2)}`;
+    };
 
     const wb = new window.ExcelJS.Workbook();
-    const ws = wb.addWorksheet('Invoice');
+    const ws = wb.addWorksheet('DADOS');
 
-    // ===== BLOCO 1: DADOS DA PRODUÇÃO (igual à Lista de Produção — respeita a seleção de linhas, se houver) =====
-    // ----- CORES DO BLOCO 1 (tema navy / azul-claro, no padrão do modelo de referência) -----
-    const titleFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
-    const headerFillMain = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
-    const bandFillA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC9D6EC' } };
-    const bandFillB = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFAEC6E8' } };
-    const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
+    // ----- CORES (fiéis ao modelo real da empresa) -----
+    const companyFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E2F3' } };
+    const navyFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    const titleFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF8EAADB' } };
+    const bandFillA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E2F3' } };
+    const bandFillB = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB4C6E7' } };
+    const thinBorder = { style: 'thin', color: { argb: 'FF000000' } };
+    const mediumBorder = { style: 'medium', color: { argb: 'FF000000' } };
 
-    // ----- LINHA 1: TÍTULO "N: 0000 / DAY: MM-DD-YY" (mesclado por toda a largura) -----
-    const todayFmt = (() => {
-      const d = new Date();
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      const yy = String(d.getFullYear()).slice(-2);
-      return `${mm}-${dd}-${yy}`;
+    // ----- LINHAS 1-3: CABEÇALHO DA EMPRESA (mesclado) -----
+    ws.mergeCells(1, 1, 3, totalCols);
+    const companyCell = ws.getRow(1).getCell(1);
+    companyCell.value = COMPANY_HEADER_TEXT;
+    companyCell.fill = companyFill;
+    companyCell.font = { name: 'Times New Roman', bold: true, size: 16 };
+    companyCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    companyCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    [1, 2, 3].forEach((r) => { ws.getRow(r).height = 30; });
+
+    // ----- LINHAS 4-5: RESPIRO EM BRANCO -----
+    [4, 5].forEach((r) => { ws.getRow(r).height = 15; });
+
+    // ----- LINHA 6: BARRA NAVY -----
+    ws.mergeCells(6, 1, 6, totalCols);
+    ws.getRow(6).getCell(1).fill = navyFill;
+    ws.getRow(6).height = 15;
+
+    // ----- LINHA 7: TÍTULO "N: 0000 / DAY: ..." — usa o período selecionado na Lista de Produção -----
+    const dayLabel = (() => {
+      if (rangeFrom && rangeTo) return rangeFrom === rangeTo ? toDDMMYY(rangeFrom) : `${toDDMMYY(rangeFrom)} A ${toDDMMYY(rangeTo)}`;
+      if (rangeFrom) return toDDMMYY(rangeFrom);
+      if (rangeTo) return toDDMMYY(rangeTo);
+      const dates = invoiceSourceRows.map((r) => r.date).filter(Boolean).sort();
+      return toDDMMYY(dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10));
     })();
-    ws.getRow(1).getCell(1).value = `N: 0000 / DAY: ${todayFmt}`;
-    ws.mergeCells(1, 1, 1, totalCols);
-
-    // ----- LINHA 2: CABEÇALHOS -----
-    ws.getRow(2).values = headers;
-
-    // ----- LINHAS 3+: DADOS -----
-    invoiceSourceRows.forEach((item, idx) => {
-      const asbuiltText = computeAsbuiltFormat(item.codes);
-      ws.getRow(3 + idx).values = [
-        item.date || '', item.map || '', item.location || '',
-        item.splice || '', item.name || '', item.type || '', item.typeEnd || '',
-        ...CODE_FIELDS.map((f) => item.codes?.[f.id] || ''),
-        asbuiltText
-      ];
-    });
-
-    const lastDataRow = 2 + invoiceSourceRows.length;
-
-    // Linha de título
-    const titleCell = ws.getRow(1).getCell(1);
+    ws.mergeCells(7, 1, 7, totalCols);
+    const titleCell = ws.getRow(7).getCell(1);
+    titleCell.value = `N: 0000 / DAY: ${dayLabel}`;
     titleCell.fill = titleFill;
-    titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 13 };
+    titleCell.font = { name: 'Times New Roman', bold: true, size: 16 };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
     titleCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    ws.getRow(7).height = 21.75;
 
-    // Linha de cabeçalhos (branco, texto preto em negrito)
+    // ----- LINHA 8: CABEÇALHOS DAS COLUNAS -----
+    ws.getRow(8).values = headers;
     for (let c = 1; c <= totalCols; c++) {
-      const cell = ws.getRow(2).getCell(c);
-      cell.fill = headerFillMain;
-      cell.font = { bold: true, color: { argb: 'FF000000' } };
+      const cell = ws.getRow(8).getCell(c);
+      cell.font = { name: 'Times New Roman', size: 12 };
       cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+      cell.border = { top: mediumBorder, bottom: mediumBorder, left: mediumBorder, right: mediumBorder };
     }
 
-    // Linhas de dados — faixas alternadas de azul (zebra), uniformes em todas as colunas
-    for (let r = 3; r <= lastDataRow; r++) {
-      const band = (r % 2 === 0) ? bandFillA : bandFillB;
+    // ----- LINHAS 9+: DADOS -----
+    invoiceSourceRows.forEach((item, idx) => {
+      const r = 9 + idx;
+      const row = ws.getRow(r);
+      const dateCell = row.getCell(1);
+      if (item.date) {
+        dateCell.value = new Date(`${item.date}T00:00:00`);
+        dateCell.numFmt = 'dd/mm/yy';
+      } else {
+        dateCell.value = '';
+      }
+      row.getCell(2).value = item.map || '';
+      row.getCell(3).value = item.location || '';
+      row.getCell(4).value = item.splice || '';
+      row.getCell(5).value = item.name || '';
+      row.getCell(6).value = item.type || '';
+      row.getCell(7).value = item.typeEnd || '';
+      CODE_FIELDS.forEach((f, i) => { row.getCell(nMain + 1 + i).value = item.codes?.[f.id] || ''; });
+      row.height = 15.75;
+    });
+
+    const lastDataRow = 8 + invoiceSourceRows.length;
+
+    // Zebra: faixas alternadas D9E2F3 / B4C6E7, uniformes em todas as colunas
+    for (let r = 9; r <= lastDataRow; r++) {
+      const band = (r % 2 === 1) ? bandFillA : bandFillB;
       for (let c = 1; c <= totalCols; c++) {
         const cell = ws.getRow(r).getCell(c);
         cell.fill = band;
+        cell.font = { name: 'Times New Roman', size: 10 };
         cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
       }
-      const asbuiltCell = ws.getRow(r).getCell(totalCols);
-      asbuiltCell.alignment = { horizontal: 'left', vertical: 'middle' };
-      asbuiltCell.font = { bold: true };
     }
 
-    // ===== BLOCO 2: FECHAMENTO / INVOICE (TOTAL, PRICE e SUBTOTAL) =====
-    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
-    const lightBlueFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFBDD7EE' } };
-    const subtotalFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    // ===== BLOCO 2: FECHAMENTO / INVOICE (TOTAL, PRICE e tabela vertical) =====
+    const miniHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2F5496' } };
+    const miniTotalFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF9CC2E5' } };
 
     const miniStartRow = lastDataRow + 3; // deixa 2 linhas em branco de respiro
     const miniStartCol = nMain + 1;       // alinha as colunas dos códigos com o bloco de cima
@@ -2723,8 +2813,8 @@ function ProductionDashboard() {
     for (let i = 0; i < nCode; i++) {
       const cell = ws.getRow(miniStartRow).getCell(miniStartCol + i);
       cell.value = codeHeaders[i];
-      cell.fill = headerFill;
-      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = miniHeaderFill;
+      cell.font = { name: 'Times New Roman', bold: true, color: { argb: 'FFFFFFFF' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     }
@@ -2738,31 +2828,37 @@ function ProductionDashboard() {
       const priceCell = ws.getRow(miniStartRow + 2).getCell(miniStartCol + i);
       priceCell.value = r.price;
       priceCell.numFmt = '"$" #,##0.00';
-      [totalCell, priceCell].forEach((cell) => {
-        cell.fill = lightBlueFill;
-        cell.font = { bold: true, color: { argb: 'FF0D3D6E' } };
-        cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-      });
+      totalCell.fill = miniTotalFill;
+      totalCell.font = { name: 'Times New Roman', bold: true };
+      totalCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      totalCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+      // PRICE não tem preenchimento (fica branco), igual ao modelo
+      priceCell.font = { name: 'Times New Roman', bold: true };
+      priceCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      priceCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     });
-    [miniStartRow + 1, miniStartRow + 2].forEach((r) => {
-      const labelCell = ws.getRow(r).getCell(miniStartCol - 1);
-      labelCell.fill = lightBlueFill;
-      labelCell.font = { bold: true, color: { argb: 'FF0D3D6E' } };
-      labelCell.alignment = { horizontal: 'left', vertical: 'middle' };
-      labelCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    });
+    const totalLabelCell = ws.getRow(miniStartRow + 1).getCell(miniStartCol - 1);
+    totalLabelCell.fill = miniTotalFill;
+    totalLabelCell.font = { name: 'Times New Roman', bold: true };
+    totalLabelCell.alignment = { horizontal: 'left', vertical: 'middle' };
+    totalLabelCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    const priceLabelCell = ws.getRow(miniStartRow + 2).getCell(miniStartCol - 1);
+    priceLabelCell.font = { name: 'Times New Roman', bold: true };
+    priceLabelCell.alignment = { horizontal: 'left', vertical: 'middle' };
+    priceLabelCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
 
-    // ----- TABELA VERTICAL (CÓDIGO / $), logo abaixo da mini-tabela, alinhada para terminar na última coluna (ASBUILT) -----
+    // ----- TABELA VERTICAL (CÓDIGO / $), logo abaixo da mini-tabela, alinhada para terminar na última coluna -----
     const vStartRow = miniStartRow + 4; // 1 linha em branco de respiro após PRICE
-    const valueCol = totalCols;         // coluna de valores termina alinhada com a última coluna (ASBUILT)
+    const valueCol = totalCols;         // coluna de valores termina alinhada com a última coluna
     const codeCol = totalCols - 1;      // coluna de rótulos (código) logo à esquerda
     invoiceRows.forEach((r, idx) => {
       const row = ws.getRow(vStartRow + idx);
       row.getCell(codeCol).value = r.label;
       row.getCell(valueCol).value = r.subtotal;
-      row.getCell(codeCol).fill = lightBlueFill;
-      row.getCell(valueCol).fill = lightBlueFill;
+      row.getCell(codeCol).fill = miniTotalFill;
+      row.getCell(valueCol).fill = miniTotalFill;
+      row.getCell(codeCol).font = { name: 'Times New Roman', bold: true };
+      row.getCell(valueCol).font = { name: 'Times New Roman', bold: true };
       row.getCell(codeCol).alignment = { horizontal: 'center', vertical: 'middle' };
       row.getCell(valueCol).alignment = { horizontal: 'right', vertical: 'middle' };
       row.getCell(valueCol).numFmt = '"$" #,##0.00';
@@ -2773,25 +2869,24 @@ function ProductionDashboard() {
     const subtotalRow = vStartRow + invoiceRows.length + 2;
     ws.getRow(subtotalRow).getCell(codeCol).value = 'TOTAL';
     ws.getRow(subtotalRow).getCell(valueCol).value = invoiceGrandTotal;
-    ws.getRow(subtotalRow).getCell(codeCol).fill = subtotalFill;
-    ws.getRow(subtotalRow).getCell(valueCol).fill = subtotalFill;
-    ws.getRow(subtotalRow).getCell(codeCol).font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
-    ws.getRow(subtotalRow).getCell(valueCol).font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+    ws.getRow(subtotalRow).getCell(codeCol).fill = navyFill;
+    ws.getRow(subtotalRow).getCell(valueCol).fill = navyFill;
+    ws.getRow(subtotalRow).getCell(codeCol).font = { name: 'Times New Roman', bold: true, color: { argb: 'FFFFFFFF' }, size: 16 };
+    ws.getRow(subtotalRow).getCell(valueCol).font = { name: 'Times New Roman', bold: true, color: { argb: 'FFFFFFFF' }, size: 16 };
     ws.getRow(subtotalRow).getCell(codeCol).alignment = { horizontal: 'center', vertical: 'middle' };
-    ws.getRow(subtotalRow).getCell(valueCol).alignment = { horizontal: 'right', vertical: 'middle' };
+    ws.getRow(subtotalRow).getCell(valueCol).alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getRow(subtotalRow).getCell(valueCol).numFmt = '"$" #,##0.00';
-    ws.getRow(subtotalRow).getCell(codeCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    ws.getRow(subtotalRow).getCell(valueCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    ws.getRow(subtotalRow).getCell(codeCol).border = { top: mediumBorder, bottom: mediumBorder, left: mediumBorder, right: mediumBorder };
+    ws.getRow(subtotalRow).getCell(valueCol).border = { top: mediumBorder, bottom: mediumBorder, left: mediumBorder, right: mediumBorder };
 
-    // Larguras de coluna (DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE2, códigos..., ASBUILT)
+    // Larguras de coluna (DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE2, códigos...)
     ws.columns = headers.map((h, i) => ({
-      width: i < nMain ? (i === 2 ? 32 : (i === 4 ? 16 : 11)) : (i < nMain + nCode ? 9 : 22)
+      width: i === 0 ? 12 : i === 1 ? 14 : i === 2 ? 30 : i === 3 ? 12 : i === 4 ? 19 : i === 5 ? 16 : i === 6 ? 13 : 10
     }));
-    ws.getColumn(valueCol).width = Math.max(ws.getColumn(valueCol).width || 0, 16);
 
-    // Congela as duas primeiras linhas (título + cabeçalho) e ativa o filtro no bloco de dados
-    ws.views = [{ state: 'frozen', ySplit: 2 }];
-    ws.autoFilter = `A2:${colLetter(totalCols)}2`;
+    // Congela até o cabeçalho de colunas e ativa o filtro no bloco de dados
+    ws.views = [{ state: 'frozen', ySplit: 8 }];
+    ws.autoFilter = `A8:${colLetter(totalCols)}8`;
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -2799,7 +2894,7 @@ function ProductionDashboard() {
     const link = document.createElement('a');
     link.href = url;
     const mapSuffix = selectedMapProd === "ALL" ? "TODOS" : selectedMapProd.replace(/\s+/g, "_");
-    link.download = `Invoice_${mapSuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    link.download = `Invoice_${mapSuffix}_DAY_${dayLabel.replace(/\s+/g, "_")}.xlsx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2807,13 +2902,16 @@ function ProductionDashboard() {
   };
 
   // ===== EXPORTAR .XLSX COLORIDO DA TABELA "CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO" =====
-  const exportGeneralXLSX = async () => {
+  // Reutilizável: recebe a lista de itens e o nome-base do arquivo, para servir tanto o botão
+  // "Exportar XLSX" (itens filtrados na tela) quanto a exportação automática do mês inteiro
+  // ao clicar em "Novo Mês (Resetar Semanas)".
+  const exportGeneralXLSXForItems = async (items, filenameBase) => {
     if (!window.ExcelJS) {
       alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
       return;
     }
     const headers = [
-      "ENTREGA", "MAPA / CÓDIGO", "OTS PENDENTES",
+      "SEMANA", "ENTREGA", "MAPA / CÓDIGO", "OTS PENDENTES",
       "AS-BUILT STATUS", "AS-BUILT TÉCNICO", "AS-BUILT DATA",
       "INVOICE STATUS", "INVOICE TÉCNICO", "INVOICE DATA",
       "WORKBOOK STATUS", "WORKBOOK TÉCNICO", "WORKBOOK DATA",
@@ -2828,6 +2926,7 @@ function ProductionDashboard() {
 
     const stageLabel = (st) => (st === "OK" || st === "SIM") ? "ATUALIZADO" : (st === "FAZENDO" ? "FAZENDO" : "PENDENTE");
     const generalLabel = (st) => st === "OK" ? "PRONTO" : (st === "PENDING_REVISION" ? "REVISÃO NECESSÁRIA" : "SEM ATUALIZAÇÃO");
+    const weekLabel = (cycleId) => (WEEK_OPTIONS.find(w => w.id === cycleId) || {}).label || cycleId || '';
 
     const wb = new window.ExcelJS.Workbook();
     const ws = wb.addWorksheet('Controle Geral');
@@ -2836,9 +2935,9 @@ function ProductionDashboard() {
     ws.getRow(1).values = headers;
 
     // ----- LINHAS 2+: DADOS -----
-    generalTableItems.forEach((item, idx) => {
+    items.forEach((item, idx) => {
       ws.getRow(2 + idx).values = [
-        item.deliveryDay || '', item.map || '', item.otCount || 0,
+        weekLabel(item.cycle), item.deliveryDay || '', item.map || '', item.otCount || 0,
         stageLabel(item.asbuiltStatus), item.asbuiltTech || '', item.asbuiltDate || '',
         stageLabel(item.invoiceStatus), item.invoiceTech || '', item.invoiceDate || '',
         stageLabel(item.workbookStatus), item.workbookTech || '', item.workbookDate || '',
@@ -2846,7 +2945,7 @@ function ProductionDashboard() {
       ];
     });
 
-    const lastDataRow = 1 + generalTableItems.length;
+    const lastDataRow = 1 + items.length;
 
     // ----- CORES -----
     const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D1117' } };
@@ -2871,18 +2970,18 @@ function ProductionDashboard() {
     }
 
     // Colunas com status (AS-BUILT, INVOICE, WORKBOOK, GERAL) coloridas por cor de andamento
-    const stageStatusCols = [4, 7, 10]; // AS-BUILT / INVOICE / WORKBOOK status
-    const generalStatusCol = 13;
+    const stageStatusCols = [5, 8, 11]; // AS-BUILT / INVOICE / WORKBOOK status (agora deslocadas +1 pela coluna SEMANA)
+    const generalStatusCol = 14;
 
     for (let r = 2; r <= lastDataRow; r++) {
-      const item = generalTableItems[r - 2];
+      const item = items[r - 2];
       for (let c = 1; c <= totalCols; c++) {
         const cell = ws.getRow(r).getCell(c);
         cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
         cell.alignment = { horizontal: c === totalCols ? 'left' : 'center', vertical: 'middle', wrapText: c === totalCols };
       }
       // OTs pendentes em destaque
-      const otCell = ws.getRow(r).getCell(3);
+      const otCell = ws.getRow(r).getCell(4);
       otCell.fill = otFill;
       otCell.font = { bold: true };
 
@@ -2905,9 +3004,9 @@ function ProductionDashboard() {
 
     // Larguras de coluna
     ws.columns = headers.map((h, i) => {
-      if (i === 1) return { width: 22 }; // MAPA / CÓDIGO
+      if (i === 2) return { width: 22 }; // MAPA / CÓDIGO
       if (i === totalCols - 1) return { width: 30 }; // OBSERVAÇÕES
-      if (i === 12) return { width: 18 }; // STATUS GERAL
+      if (i === 13) return { width: 18 }; // STATUS GERAL
       return { width: 13 };
     });
 
@@ -2920,18 +3019,22 @@ function ProductionDashboard() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    const daySuffix = selectedDeliveryDay === "ALL" ? "TODAS_ENTREGAS" : selectedDeliveryDay.replace(/\s+/g, "_");
-    link.download = `Controle_Geral_${daySuffix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    link.download = `${filenameBase}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
 
+  const exportGeneralXLSX = async () => {
+    const daySuffix = selectedDeliveryDay === "ALL" ? "TODAS_ENTREGAS" : selectedDeliveryDay.replace(/\s+/g, "_");
+    await exportGeneralXLSXForItems(generalTableItems, `Controle_Geral_${daySuffix}`);
+  };
+
   return (
     <div style={{ padding: "0 0 30px 0" }}>
       {/* HEADER */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center", justifyContent: "space-between", background: C.panel, borderBottom: `1px solid ${C.border}`, padding: "14px 20px", marginBottom: 18 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center", justifyContent: "space-between", background: C.panel, borderBottom: `1px solid ${C.border}`, padding: "14px 20px", marginBottom: 18, position: "sticky", top: 0, zIndex: 60, boxShadow: "0 4px 12px rgba(0,0,0,0.35)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
             <div style={{ fontFamily: FONT_HEAD, fontSize: 19, fontWeight: 800, color: C.accent, letterSpacing: -0.5 }}>
@@ -3029,7 +3132,7 @@ function ProductionDashboard() {
                 </select>
               </div>
 
-              <button onClick={handleResetMonth} title="Arquiva os itens atuais e reinicia as Semanas 1-4 do zero (use quando virar o mês)" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+              <button onClick={handleResetMonth} title="Baixa um .xlsx com tudo do mês, arquiva os itens atuais e reinicia as Semanas 1-4 do zero (use quando virar o mês)" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
                 <RotateCcw size={13} /> Novo Mês (Resetar Semanas)
               </button>
 
@@ -3499,6 +3602,9 @@ function ProductionDashboard() {
           title="CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO"
           right={
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button onClick={handleCopyToNextWeek} title="Copia os mapas marcados (ou todos os visíveis, se nenhum estiver marcado) para a semana seguinte, já zerados como PENDENTE" style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(179,136,255,0.12)", color: C.purple, border: `1px solid ${C.purple}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                <Copy size={12} /> Copiar {selectedGeneralIds.size > 0 ? `(${selectedGeneralIds.size})` : "Todos"} p/ Próxima Semana
+              </button>
               <button onClick={exportGeneralXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
                 <Download size={12} /> Exportar XLSX
               </button>
@@ -3548,6 +3654,9 @@ function ProductionDashboard() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
               <thead>
                 <tr style={{ color: C.textDim, textAlign: "left", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 9.5, letterSpacing: 0.8 }}>
+                  <th style={{ padding: "8px 6px", width: 28 }}>
+                    <input type="checkbox" checked={allGeneralVisibleSelected} onChange={toggleSelectAllGeneralVisible} title="Selecionar/desmarcar todos os mapas visíveis" style={{ cursor: "pointer" }} />
+                  </th>
                   <th style={{ padding: "8px 6px" }}>ENTREGA</th>
                   <th style={{ padding: "8px 6px" }}>MAPA / CÓDIGO</th>
                   <th style={{ padding: "8px 6px" }}>OTS PENDENTES</th>
@@ -3562,7 +3671,10 @@ function ProductionDashboard() {
               </thead>
               <tbody>
                 {generalTableItems.length > 0 ? generalTableItems.map((item) => (
-                  <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+                  <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}`, background: selectedGeneralIds.has(item.id) ? "rgba(179,136,255,0.06)" : "transparent" }}>
+                    <td style={{ padding: "8px 6px" }}>
+                      <input type="checkbox" checked={selectedGeneralIds.has(item.id)} onChange={() => toggleGeneralSelect(item.id)} style={{ cursor: "pointer" }} />
+                    </td>
                     <td style={{ padding: "8px 6px" }}>
                       <span style={{ color: item.deliveryDay === "QUINTA" ? C.accent : C.purple, fontWeight: 700, fontSize: 10 }}>{item.deliveryDay}</span>
                     </td>
@@ -3602,7 +3714,7 @@ function ProductionDashboard() {
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan="10" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>Nenhum item encontrado{selectedDeliveryDay !== "ALL" ? ` para a entrega de ${selectedDeliveryDay}` : ""}.</td>
+                    <td colSpan="11" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>Nenhum item encontrado{selectedDeliveryDay !== "ALL" ? ` para a entrega de ${selectedDeliveryDay}` : ""}.</td>
                   </tr>
                 )}
               </tbody>
@@ -3634,7 +3746,7 @@ function ProductionDashboard() {
               <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => setShowArchiveModal(false)} />
             </div>
             <div style={{ fontSize: 10, color: C.textDim, marginBottom: 14, lineHeight: 1.5 }}>
-              Toda vez que você clica em "Novo Mês (Resetar Semanas)", os itens atuais são guardados aqui antes de a lista ser zerada. Nada se perde.
+              Toda vez que você clica em "Novo Mês (Resetar Semanas)", um .xlsx com tudo do mês é baixado automaticamente e os itens atuais são guardados aqui antes de a lista ser zerada. Nada se perde.
             </div>
 
             {archives.length === 0 ? (
