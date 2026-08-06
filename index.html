@@ -475,12 +475,26 @@ function formatShortDate(dateStr) {
     return `${parts[2]}/${parts[1]}`;
 }
 
+// Entradas de histórico podem vir no formato antigo (string 'YYYY-MM-DD')
+// ou no novo formato ({ date, tech }) que também guarda quem atualizou naquele dia.
+function historyEntryDate(entry) {
+    if (!entry) return '';
+    return typeof entry === 'string' ? entry : (entry.date || '');
+}
+function historyEntryTech(entry) {
+    if (!entry || typeof entry === 'string') return '';
+    return entry.tech || '';
+}
+function historyHasDate(list, dateStr) {
+    return (Array.isArray(list) ? list : []).some((e) => historyEntryDate(e) === dateStr);
+}
+
 const MAX_HISTORY_DOTS_VISIBLE = 3;
 
 function UpdateHistoryRow({ title, history, color, onAddToday }) {
     const [expanded, setExpanded] = useState(false);
     const list = Array.isArray(history) ? history : [];
-    const hasToday = list.includes(new Date().toISOString().slice(0, 10));
+    const hasToday = historyHasDate(list, new Date().toISOString().slice(0, 10));
     const visible = expanded ? list : list.slice(-MAX_HISTORY_DOTS_VISIBLE);
     const hiddenCount = list.length - visible.length;
 
@@ -500,18 +514,24 @@ function UpdateHistoryRow({ title, history, color, onAddToday }) {
                 {visible.length === 0 && (
                     <span style={{ fontSize: 9, color: C.textFaint }}>—</span>
                 )}
-                {visible.map((d, i) => (
-                    <span
-                        key={d + i}
-                        title={`${title} atualizado em ${d}`}
-                        style={{
-                            fontSize: 9, fontWeight: 700, color: color, background: `${color}22`,
-                            border: `1px solid ${color}`, borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap'
-                        }}
-                    >
-                        {formatShortDate(d)}
-                    </span>
-                ))}
+                {visible.map((entry, i) => {
+                    const d = historyEntryDate(entry);
+                    const tech = historyEntryTech(entry);
+                    return (
+                        <span
+                            key={d + i}
+                            title={tech ? `${title} atualizado em ${d} por ${tech}` : `${title} atualizado em ${d}`}
+                            style={{
+                                fontSize: 9, fontWeight: 700, color: color, background: `${color}22`,
+                                border: `1px solid ${color}`, borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap',
+                                display: 'inline-flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.15
+                            }}
+                        >
+                            <span>{formatShortDate(d)}</span>
+                            {tech && <span style={{ fontSize: 7, fontWeight: 600, opacity: 0.85 }}>{tech}</span>}
+                        </span>
+                    );
+                })}
                 {onAddToday && (
                     <button
                         onClick={onAddToday}
@@ -1925,16 +1945,18 @@ function ProductionDashboard() {
     });
   });
 
-  // ===== HISTÓRICO DE ATUALIZAÇÕES (CICLO) — adiciona a data de hoje na etapa escolhida =====
+  // ===== HISTÓRICO DE ATUALIZAÇÕES (CICLO) — adiciona a data de hoje na etapa escolhida, junto com quem atualizou =====
   const addHistoryToday = (itemId, stage) => {
     const today = new Date().toISOString().slice(0, 10);
     const historyKey = `${stage}History`; // 'asbuiltHistory' | 'workbookHistory' | 'invoiceHistory'
     const dateKey = `${stage}Date`;
+    const techKey = `${stage}Tech`;
     setProjects((prev) => prev.map((p) => {
       if (p.id !== itemId) return p;
       const currentHistory = Array.isArray(p[historyKey]) ? p[historyKey] : [];
-      if (currentHistory.includes(today)) return p; // já registrado hoje, não duplica
-      return { ...p, [historyKey]: [...currentHistory, today], [dateKey]: today };
+      if (historyHasDate(currentHistory, today)) return p; // já registrado hoje, não duplica
+      const entry = { date: today, tech: (p[techKey] || '').trim() };
+      return { ...p, [historyKey]: [...currentHistory, entry], [dateKey]: today };
     }));
   };
 
@@ -2193,14 +2215,11 @@ function ProductionDashboard() {
     return filteredAndSorted.filter((p) => (p.deliveryDay || "").trim().toUpperCase() === selectedDeliveryDay);
   }, [filteredAndSorted, selectedDeliveryDay]);
 
-  // DESEMPENHO POR COLABORADOR: CADA ATUALIZAÇÃO SOMA 1 PONTO
+  // DESEMPENHO POR COLABORADOR: CADA DIA REGISTRADO NO CICLO (COM TÉCNICO) SOMA 1 PONTO PARA QUEM ATUALIZOU
   const perfCollaborators = useMemo(() => {
     const mapTechs = {};
 
-    const registerTechUpdate = (techName, stageName, isCompleted, otCount, mapLabel) => {
-      if (!techName) return;
-      const key = techName.toUpperCase().trim();
-
+    const ensureTech = (key) => {
       if (!mapTechs[key]) {
         mapTechs[key] = {
           name: key,
@@ -2214,26 +2233,38 @@ function ProductionDashboard() {
           workbookMaps: []
         };
       }
+      return mapTechs[key];
+    };
 
-      if (isCompleted) {
-        mapTechs[key].updatesCount += 1; // +1 Ponto por etapa concluída!
-        const mapName = (mapLabel || "SEM MAPA").trim();
-        if (stageName === 'AB') { mapTechs[key].asbuiltCount += 1; mapTechs[key].asbuiltMaps.push(mapName); }
-        if (stageName === 'INV') { mapTechs[key].invoiceCount += 1; mapTechs[key].invoiceMaps.push(mapName); }
-        if (stageName === 'WB') { mapTechs[key].workbookCount += 1; mapTechs[key].workbookMaps.push(mapName); }
-      } else {
-        mapTechs[key].pendingOts += otCount || 0;
-      }
+    // Cada entrada de data no histórico do ciclo vale 1 ponto para o técnico que a registrou.
+    // Ex: mapa X atualizado por KELVI em 04-08 e 05-08, depois por CARLOS em 06-08, depois
+    // KELVI de novo em 07-08 → KELVI fica com 3 pontos (3 datas) e CARLOS com 1 (1 data).
+    const recordUpdate = (techName, stageName, mapLabel, dateStr) => {
+      const key = (techName || "").toUpperCase().trim();
+      if (!key) return; // sem técnico atribuído nessa data, não dá pra creditar ninguém
+      const t = ensureTech(key);
+      t.updatesCount += 1;
+      const mapName = `${(mapLabel || "SEM MAPA").trim()}${dateStr ? ` (${formatShortDate(dateStr)})` : ""}`;
+      if (stageName === 'AB') { t.asbuiltCount += 1; t.asbuiltMaps.push(mapName); }
+      if (stageName === 'INV') { t.invoiceCount += 1; t.invoiceMaps.push(mapName); }
+      if (stageName === 'WB') { t.workbookCount += 1; t.workbookMaps.push(mapName); }
     };
 
     filteredAndSorted.forEach(p => {
-      const isAbDone = p.asbuiltStatus === "OK";
-      const isInvDone = p.invoiceStatus === "SIM" || p.invoiceStatus === "OK";
-      const isWbDone = p.workbookStatus === "SIM" || p.workbookStatus === "OK";
+      [
+        { hist: p.asbuiltHistory, stage: 'AB' },
+        { hist: p.workbookHistory, stage: 'WB' },
+        { hist: p.invoiceHistory, stage: 'INV' }
+      ].forEach(({ hist, stage }) => {
+        (Array.isArray(hist) ? hist : []).forEach((entry) => {
+          recordUpdate(historyEntryTech(entry), stage, p.map, historyEntryDate(entry));
+        });
+      });
 
-      registerTechUpdate(p.asbuiltTech, 'AB', isAbDone, p.otCount, p.map);
-      registerTechUpdate(p.invoiceTech, 'INV', isInvDone, 0, p.map);
-      registerTechUpdate(p.workbookTech, 'WB', isWbDone, 0, p.map);
+      // OTs pendentes continuam atribuídas ao técnico de AS-BUILT atual do item
+      if (p.otCount > 0 && p.asbuiltTech) {
+        ensureTech(p.asbuiltTech.toUpperCase().trim()).pendingOts += p.otCount;
+      }
     });
 
     return Object.values(mapTechs).sort((a, b) => b.updatesCount - a.updatesCount);
@@ -3905,10 +3936,12 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
   const addFormHistoryToday = (stage) => {
     const historyKey = `${stage}History`;
     const dateKey = `${stage}Date`;
+    const techKey = `${stage}Tech`;
     setForm((f) => {
       const currentHistory = Array.isArray(f[historyKey]) ? f[historyKey] : [];
-      if (currentHistory.includes(today)) return f;
-      return { ...f, [historyKey]: [...currentHistory, today], [dateKey]: today };
+      if (historyHasDate(currentHistory, today)) return f;
+      const entry = { date: today, tech: (f[techKey] || '').trim() };
+      return { ...f, [historyKey]: [...currentHistory, entry], [dateKey]: today };
     });
   };
 
@@ -3921,13 +3954,21 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
 
   const handleAsBuiltStatusChange = (e) => {
     const val = e.target.value;
+    const countsAsActivity = val === "OK" || val === "FAZENDO";
+
+    // Exige o nome do técnico ANTES de deixar marcar FAZENDO/ATUALIZADO — assim o mapa já
+    // fica "pegado" por quem vai executar, e esse nome é reaproveitado quando finalizar.
+    if (countsAsActivity && !(form.asbuiltTech || '').trim()) {
+      alert('Preencha o campo "Seu Nome (Técnico)" antes de marcar FAZENDO ou ATUALIZADO.');
+      return;
+    }
+
     setForm(f => {
       // Marcar FAZENDO ou ATUALIZADO (OK) já conta como atividade do dia no Ciclo (Sáb-Sex),
       // sem precisar clicar manualmente em "+Hoje" depois no Controle Geral.
-      const countsAsActivity = val === "OK" || val === "FAZENDO";
       const currentHistory = Array.isArray(f.asbuiltHistory) ? f.asbuiltHistory : [];
-      const asbuiltHistory = countsAsActivity && !currentHistory.includes(today)
-        ? [...currentHistory, today]
+      const asbuiltHistory = countsAsActivity && !historyHasDate(currentHistory, today)
+        ? [...currentHistory, { date: today, tech: (f.asbuiltTech || '').trim() }]
         : currentHistory;
       return {
         ...f,
