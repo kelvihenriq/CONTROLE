@@ -66,14 +66,26 @@ function useCloudSync(key, deps, getValue, applyRemote) {
   // Carrega o valor mais recente da nuvem e assina mudanças em tempo real
   useEffect(() => {
     let active = true;
+    // Guarda uma "foto" do estado local no instante em que a página abriu. A busca na nuvem
+    // é assíncrona (depende da rede) — se o usuário editar e salvar algo ENQUANTO isso ainda
+    // está carregando, não podemos deixar a resposta da nuvem (que é mais antiga) sobrescrever
+    // essa edição por cima quando ela chegar atrasada.
+    const localSnapshotAtMount = JSON.stringify(getValue());
     (async () => {
       try {
         const { data, error } = await sb.from(APP_STATE_TABLE).select('value').eq('key', key).maybeSingle();
         if (!active) return;
         if (error) throw error;
+        const editedWhileLoading = JSON.stringify(getValue()) !== localSnapshotAtMount;
         if (data && data.value !== undefined && data.value !== null) {
-          isApplyingRemote.current = true;
-          applyRemote(data.value);
+          if (editedWhileLoading) {
+            // O usuário já mexeu em algo enquanto isso carregava — o dado local agora é o mais
+            // novo. Em vez de descartar a edição, sobe o valor local atual pra nuvem.
+            await sb.from(APP_STATE_TABLE).upsert({ key, value: getValue(), updated_at: new Date().toISOString() });
+          } else {
+            isApplyingRemote.current = true;
+            applyRemote(data.value);
+          }
         } else {
           // Ainda não existe registro para essa chave: sobe o valor local atual como semente inicial
           await sb.from(APP_STATE_TABLE).upsert({ key, value: getValue(), updated_at: new Date().toISOString() });
@@ -589,6 +601,9 @@ function StageBadge({ status, tech, date }) {
         )}
       </div>
     );
+  }
+  if (status === "SEM_ATUALIZACAO_SEMANA") {
+    return <span style={{ background: C.panel2, color: C.textFaint, border: `1px solid ${C.border2}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>SEM ATUALIZAÇÃO NA SEMANA</span>;
   }
   return <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>PENDENTE</span>;
 }
@@ -2202,12 +2217,21 @@ function ProductionDashboard() {
     const ok = filteredAndSorted.filter(p => p.status === "OK" || (p.asbuiltStatus === "OK" && p.invoiceStatus === "SIM" && p.workbookStatus === "SIM")).length;
     const pending = total - ok;
     const totalOTs = filteredAndSorted.reduce((acc, p) => acc + (p.otCount || 0), 0);
+    // Total equivalente pela Produção: soma, por mapa presente neste ciclo, das linhas de Produção
+    // ainda não marcadas FEITO. Serve só de comparação — não substitui o total oficial (totalOTs),
+    // que continua vindo do saldo salvo em cada item (editável no cadastro/Fila de Prioridade).
+    const mapsInCycle = new Set(filteredAndSorted.map(p => (p.map || "").trim().toUpperCase()).filter(Boolean));
+    const totalOTsFromProduction = productionList.reduce((acc, p) => {
+      const mapKey = (p.map || "").trim().toUpperCase();
+      if (mapsInCycle.has(mapKey) && !p.done) return acc + 1;
+      return acc;
+    }, 0);
     const invoiceUpdated = filteredAndSorted.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK").length;
     const workbookUpdated = filteredAndSorted.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK").length;
     const rate = total > 0 ? Math.round((ok / total) * 100) : 0;
 
-    return { total, ok, pending, totalOTs, invoiceUpdated, workbookUpdated, rate };
-  }, [filteredAndSorted]);
+    return { total, ok, pending, totalOTs, totalOTsFromProduction, invoiceUpdated, workbookUpdated, rate };
+  }, [filteredAndSorted, productionList]);
 
   const statusBadge = (st) => {
     switch (st) {
@@ -2292,7 +2316,7 @@ function ProductionDashboard() {
       ...item,
       id: `item-${Date.now()}-${idx}`,
       cycle: nextCycleOf(item.cycle || "SEMANA_1"),
-      asbuiltStatus: "PENDENTE", asbuiltDate: "", asbuiltTech: "", asbuiltHistory: [],
+      asbuiltStatus: "SEM_ATUALIZACAO_SEMANA", asbuiltDate: "", asbuiltTech: "", asbuiltHistory: [],
       invoiceStatus: "PENDENTE", invoiceDate: "", invoiceTech: "", invoiceHistory: [],
       workbookStatus: "PENDENTE", workbookDate: "", workbookTech: "", workbookHistory: [],
       status: "NO_UPDATE"
@@ -2901,7 +2925,7 @@ function ProductionDashboard() {
       return s;
     };
 
-    const stageLabel = (st) => (st === "OK" || st === "SIM") ? "ATUALIZADO" : (st === "FAZENDO" ? "FAZENDO" : "PENDENTE");
+    const stageLabel = (st) => (st === "OK" || st === "SIM") ? "ATUALIZADO" : (st === "FAZENDO" ? "FAZENDO" : (st === "SEM_ATUALIZACAO_SEMANA" ? "SEM ATUALIZAÇÃO NA SEMANA" : "PENDENTE"));
     const generalLabel = (st) => st === "OK" ? "PRONTO" : (st === "PENDING_REVISION" ? "REVISÃO NECESSÁRIA" : "SEM ATUALIZAÇÃO");
     const weekLabel = (cycleId) => (WEEK_OPTIONS.find(w => w.id === cycleId) || {}).label || cycleId || '';
 
@@ -2969,6 +2993,7 @@ function ProductionDashboard() {
         const cell = ws.getRow(r).getCell(colIdx);
         if (st === "OK" || st === "SIM") { cell.fill = greenFill; cell.font = greenFont; }
         else if (st === "FAZENDO") { cell.fill = amberFill; cell.font = amberFont; }
+        else if (st === "SEM_ATUALIZACAO_SEMANA") { cell.fill = grayFill; cell.font = grayFont; }
         else { cell.fill = redFill; cell.font = redFont; }
       });
 
@@ -3596,6 +3621,11 @@ function ProductionDashboard() {
           <Panel title="Total OTs Pendentes no Ciclo" icon={<AlertTriangle size={13} color={C.red} />}>
             <StatRow label="OTs a Fazer" value={kpis.totalOTs} valueColor={kpis.totalOTs > 0 ? C.red : C.green} />
             <StatRow label="Prioridade Máxima" value={filteredAndSorted[0]?.otCount > 0 ? `${filteredAndSorted[0].map} (${filteredAndSorted[0].otCount} OTs)` : "Nenhuma"} valueColor={C.amber} />
+            {kpis.totalOTsFromProduction !== kpis.totalOTs && (
+              <div style={{ fontSize: 9, color: C.textFaint, marginTop: 6, lineHeight: 1.4 }}>
+                📋 Pela Produção (linhas não FEITO dos mapas deste ciclo): <strong style={{ color: C.amber }}>{kpis.totalOTsFromProduction}</strong>. Ajuste o saldo no cadastro de cada mapa se quiser igualar.
+              </div>
+            )}
           </Panel>
           <Panel title="Status As-Built" icon={<CheckCircle size={13} color={C.green} />}>
             <StatRow label="Prontos no Ciclo" value={kpis.ok} valueColor={C.green} />
@@ -3852,6 +3882,7 @@ function ProductionDashboard() {
           initial={editingItem}
           mode={modalMode}
           openWeek={openWeek}
+          productionList={productionList}
           onClose={() => { setShowModal(false); setEditingItem(null); }}
           onSave={handleSaveItem}
         />
@@ -4142,7 +4173,7 @@ function ProductionModal({ initial, onClose, onSave }) {
   );
 }
 
-function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
+function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, productionList = [] }) {
   const today = new Date().toISOString().slice(0, 10);
   const [addOtInput, setAddOtInput] = useState("");
   const isQueueMode = mode === "QUEUE";
@@ -4153,7 +4184,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
     map: "",
     status: "NO_UPDATE",
     otCount: 0,
-    asbuiltStatus: "PENDENTE",
+    asbuiltStatus: "SEM_ATUALIZACAO_SEMANA",
     asbuiltDate: "",
     asbuiltTech: "",
     invoiceStatus: "PENDENTE",
@@ -4166,6 +4197,25 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
   });
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  // ===== SUGESTÃO AUTOMÁTICA DE "OTs PENDENTES" A PARTIR DA PRODUÇÃO =====
+  // Conta, na aba Produção, quantas linhas desse MESMO mapa ainda não estão marcadas "FEITO".
+  // É a mesma lógica do "X a fazer" que já aparece na Produção — só que agora sugerida aqui
+  // também, pra ninguém precisar contar na mão e digitar de novo. NÃO sobrescreve sozinho:
+  // o número salvo (form.otCount) só muda quando o usuário clicar em "Usar este valor".
+  const otSuggestion = useMemo(() => {
+    const mapKey = (form.map || "").trim().toUpperCase();
+    if (!mapKey) return null;
+    const rows = productionList.filter(p => (p.map || "").trim().toUpperCase() === mapKey);
+    if (rows.length === 0) return null; // mapa ainda sem produção lançada — não dá suficiente pra sugerir
+    const pending = rows.filter(p => !p.done).length;
+    return { pending, total: rows.length };
+  }, [form.map, productionList]);
+
+  const applyOtSuggestion = () => {
+    if (!otSuggestion) return;
+    setForm(f => ({ ...f, otCount: otSuggestion.pending }));
+  };
 
   const addFormHistoryToday = (stage) => {
     const historyKey = `${stage}History`;
@@ -4217,20 +4267,34 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
 
   const handleWorkbookStatusChange = (e) => {
     const val = e.target.value;
-    setForm(f => ({ 
-      ...f, 
-      workbookStatus: val, 
-      workbookDate: val === "SIM" && !f.workbookDate ? today : f.workbookDate 
-    }));
+    setForm(f => {
+      const currentHistory = Array.isArray(f.workbookHistory) ? f.workbookHistory : [];
+      const workbookHistory = val === "SIM" && !historyHasDate(currentHistory, today)
+        ? [...currentHistory, { date: today, tech: (f.workbookTech || '').trim() }]
+        : currentHistory;
+      return {
+        ...f,
+        workbookStatus: val,
+        workbookDate: val === "SIM" && !f.workbookDate ? today : f.workbookDate,
+        workbookHistory
+      };
+    });
   };
 
   const handleInvoiceStatusChange = (e) => {
     const val = e.target.value;
-    setForm(f => ({ 
-      ...f, 
-      invoiceStatus: val, 
-      invoiceDate: val === "SIM" && !f.invoiceDate ? today : f.invoiceDate 
-    }));
+    setForm(f => {
+      const currentHistory = Array.isArray(f.invoiceHistory) ? f.invoiceHistory : [];
+      const invoiceHistory = val === "SIM" && !historyHasDate(currentHistory, today)
+        ? [...currentHistory, { date: today, tech: (f.invoiceTech || '').trim() }]
+        : currentHistory;
+      return {
+        ...f,
+        invoiceStatus: val,
+        invoiceDate: val === "SIM" && !f.invoiceDate ? today : f.invoiceDate,
+        invoiceHistory
+      };
+    });
   };
 
   // ===== MODO "FILA DE PRIORIDADE": modal enxuto, só para atualização diária do AS-BUILT =====
@@ -4246,14 +4310,26 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
             Marque <strong style={{ color: C.amber }}>FAZENDO</strong> assim que começar (assim ninguém mais pega esse mapa), e <strong style={{ color: C.green }}>ATUALIZADO</strong> quando terminar. As OTs pendentes só somem quando marcar ATUALIZADO.
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,82,82,0.08)", border: `1px solid ${C.red}`, padding: "8px 12px", borderRadius: 6, marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,82,82,0.08)", border: `1px solid ${C.red}`, padding: "8px 12px", borderRadius: 6, marginBottom: otSuggestion ? 6 : 14 }}>
             <span style={{ fontSize: 10.5, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>OTs Pendentes</span>
             <span style={{ fontSize: 16, fontWeight: 800, color: C.red }}>{form.otCount}</span>
           </div>
+          {otSuggestion && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "rgba(255,193,7,0.08)", border: `1px dashed ${C.amber}`, padding: "6px 10px", borderRadius: 6, marginBottom: 14 }}>
+              <span style={{ fontSize: 9.5, color: C.textDim, lineHeight: 1.4 }}>
+                📋 Produção deste mapa: <strong style={{ color: C.amber }}>{otSuggestion.pending} de {otSuggestion.total} linhas</strong> ainda não marcadas FEITO.
+                {otSuggestion.pending !== Number(form.otCount || 0) && " Valor diferente do salvo aqui."}
+              </span>
+              <button type="button" onClick={applyOtSuggestion} style={{ background: "transparent", border: `1px solid ${C.amber}`, color: C.amber, borderRadius: 5, padding: "4px 8px", fontSize: 9.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                Usar {otSuggestion.pending}
+              </button>
+            </div>
+          )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <Field label="Status AS-BUILT">
               <select value={form.asbuiltStatus} onChange={handleAsBuiltStatusChange} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
+                <option value="SEM_ATUALIZACAO_SEMANA">SEM ATUALIZAÇÃO NA SEMANA (ATÉ O MOMENTO)</option>
                 <option value="PENDENTE">PENDENTE</option>
                 <option value="FAZENDO">FAZENDO (Em Andamento)</option>
                 <option value="OK">ATUALIZADO (OK)</option>
@@ -4300,9 +4376,25 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
             <span style={{ color: C.red, fontWeight: 700, fontSize: 10, textTransform: "uppercase" }}>⚡ Priorização de OTs (Novas Demandas)</span>
             <span style={{ fontSize: 11, fontWeight: 800, color: C.text }}>Saldo Total Pendente: <span style={{ color: C.red, fontSize: 14 }}>{form.otCount} OTs</span></span>
           </div>
+          {otSuggestion && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "rgba(255,193,7,0.08)", border: `1px dashed ${C.amber}`, padding: "6px 10px", borderRadius: 6, marginBottom: 10 }}>
+              <span style={{ fontSize: 9.5, color: C.textDim, lineHeight: 1.4 }}>
+                📋 Sugestão automática (Produção): <strong style={{ color: C.amber }}>{otSuggestion.pending} de {otSuggestion.total} linhas</strong> deste mapa ainda não marcadas FEITO.
+                {otSuggestion.pending !== Number(form.otCount || 0) && " Diferente do saldo salvo aqui."}
+              </span>
+              <button type="button" onClick={applyOtSuggestion} style={{ background: "transparent", border: `1px solid ${C.amber}`, color: C.amber, borderRadius: 5, padding: "4px 8px", fontSize: 9.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                Usar {otSuggestion.pending}
+              </button>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
             <div style={{ flex: 1 }}><Field label="Adicionar OTs Criadas"><Input type="number" placeholder="Ex: 5" value={addOtInput} onChange={(e) => setAddOtInput(e.target.value)} /></Field></div>
             <button onClick={handleAddOt} type="button" style={{ background: C.red, color: "#fff", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", height: 32 }}>+ Somar OTs</button>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <Field label="Ajustar Saldo Manualmente (sobrescreve o total acima)">
+              <Input type="number" placeholder="Ex: 3" value={form.otCount} onChange={(e) => setForm(f => ({ ...f, otCount: e.target.value === "" ? "" : Number(e.target.value) }))} />
+            </Field>
           </div>
         </div>
 
@@ -4312,6 +4404,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
               <Field label="Status AS-BUILT">
                 <select value={form.asbuiltStatus} onChange={handleAsBuiltStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
+                  <option value="SEM_ATUALIZACAO_SEMANA">SEM ATUALIZAÇÃO NA SEMANA (ATÉ O MOMENTO)</option>
                   <option value="PENDENTE">PENDENTE</option>
                   <option value="FAZENDO">FAZENDO (Em Andamento)</option>
                   <option value="OK">ATUALIZADO (OK)</option>
