@@ -2353,6 +2353,54 @@ function ProductionDashboard() {
 
   const clearProdSelection = () => setSelectedProdIds(new Set());
 
+  // ===== MARCAÇÃO "FEITO" (conclusão de produção) — separada da seleção de linhas para invoice =====
+  // Permite marcar cada registro como concluído sem afetar a seleção usada no Fechamento/Invoice.
+  const [prodDoneFilter, setProdDoneFilter] = useState("ALL"); // "ALL" | "PENDING" | "DONE"
+
+  const toggleProdDone = (id) => {
+    setProductionList(prev => prev.map(p => p.id === id ? { ...p, done: !p.done } : p));
+  };
+
+  // Progresso por data: quantos registros existem em cada dia e quantos já foram marcados
+  // como "FEITO" — assim dá pra ver, por exemplo, que no dia 08-08 tinham 18 a fazer e
+  // quantos já foram concluídos, mesmo que apareçam trabalhos novos no mesmo dia depois.
+  const dailyProdStats = useMemo(() => {
+    const map = {};
+    filteredProduction.forEach((item) => {
+      const d = item.date || "SEM DATA";
+      if (!map[d]) map[d] = { total: 0, done: 0 };
+      map[d].total += 1;
+      if (item.done) map[d].done += 1;
+    });
+    return Object.entries(map)
+      .map(([date, stats]) => ({ date, ...stats, pending: stats.total - stats.done }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [filteredProduction]);
+
+  // Aplica o filtro Todos/Pendentes/Feitos por cima do que já estava filtrado (mapa + busca)
+  const visibleProduction = useMemo(() => {
+    if (prodDoneFilter === "PENDING") return filteredProduction.filter(p => !p.done);
+    if (prodDoneFilter === "DONE") return filteredProduction.filter(p => p.done);
+    return filteredProduction;
+  }, [filteredProduction, prodDoneFilter]);
+
+  // Progresso do PERÍODO DE ENTREGA (ex: fechamento semanal de 08-08 até 14-08) — usa o mesmo
+  // "DE / ATÉ" já existente no cabeçalho, então mudar as datas ali também atualiza esse resumo.
+  const formatDateBR = (isoDate) => {
+    if (!isoDate) return "";
+    const parts = isoDate.split("-");
+    if (parts.length !== 3) return isoDate;
+    const [y, m, d] = parts;
+    return `${d}/${m}`;
+  };
+  const periodProdStats = useMemo(() => {
+    if (!rangeFrom || !rangeTo) return null;
+    const rows = filteredProduction.filter(p => p.date && p.date >= rangeFrom && p.date <= rangeTo);
+    const total = rows.length;
+    const done = rows.filter(p => p.done).length;
+    return { total, done, pending: total - done, from: rangeFrom, to: rangeTo };
+  }, [filteredProduction, rangeFrom, rangeTo]);
+
   // Marca automaticamente todas as linhas visíveis dentro de um período de datas (ex: 2026-08-01 a 2026-08-07)
   const selectByDateRange = () => {
     if (!rangeFrom || !rangeTo) { alert('Preencha as duas datas (de / até) pra selecionar por período.'); return; }
@@ -2471,6 +2519,7 @@ function ProductionDashboard() {
       id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       daily: "",
       pendings: "NO HUNG",
+      done: false,
       date: r.date || "",
       map: r.map || "",
       location: r.location || "",
@@ -3147,6 +3196,29 @@ function ProductionDashboard() {
                   <X size={11} /> Limpar Seleção ({selectedProdIds.size})
                 </button>
               )}
+              <div style={{ display: "flex", alignItems: "center", gap: 4, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: 3 }}>
+                {[
+                  { id: "ALL", label: "Todos" },
+                  { id: "PENDING", label: "Pendentes" },
+                  { id: "DONE", label: "Feitos" },
+                ].map((f) => {
+                  const active = prodDoneFilter === f.id;
+                  return (
+                    <button
+                      key={f.id}
+                      onClick={() => setProdDoneFilter(f.id)}
+                      style={{
+                        background: active ? C.greenSoft : "transparent",
+                        color: active ? C.green : C.textDim,
+                        border: active ? `1px solid ${C.green}` : "1px solid transparent",
+                        borderRadius: 4, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer"
+                      }}
+                    >
+                      {f.label}
+                    </button>
+                  );
+                })}
+              </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
                 <Search size={12} color={C.textFaint} />
                 <input placeholder="Buscar na produção..." value={searchProd} onChange={(e) => setSearchProd(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 160 }} />
@@ -3161,12 +3233,55 @@ function ProductionDashboard() {
                 </span>
               )}
             </div>
+
+            {/* PROGRESSO DO PERÍODO DE ENTREGA (usa o DE / ATÉ do cabeçalho) */}
+            {periodProdStats && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap",
+                background: periodProdStats.pending > 0 ? "rgba(255, 82, 82, 0.08)" : "rgba(0, 230, 118, 0.08)",
+                border: `1px solid ${periodProdStats.pending > 0 ? C.red : C.green}`,
+                borderRadius: 8, padding: "12px 16px", marginBottom: 14
+              }}>
+                <div>
+                  <div style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 3 }}>
+                    Entrega {formatDateBR(periodProdStats.from)} até {formatDateBR(periodProdStats.to)}
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: periodProdStats.pending > 0 ? C.red : C.green }}>
+                    {periodProdStats.pending > 0 ? `${periodProdStats.pending} a fazer` : "Tudo entregue!"}
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 160, maxWidth: 320 }}>
+                  <div style={{ height: 9, background: C.border2, borderRadius: 5, overflow: "hidden" }}>
+                    <div style={{ width: `${periodProdStats.total > 0 ? Math.round((periodProdStats.done / periodProdStats.total) * 100) : 0}%`, height: "100%", background: C.green, transition: "width 0.4s ease" }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: C.textDim, marginTop: 4 }}>{periodProdStats.done} feitos de {periodProdStats.total} no período ({periodProdStats.total > 0 ? Math.round((periodProdStats.done / periodProdStats.total) * 100) : 0}%)</div>
+                </div>
+              </div>
+            )}
+
+            {/* PROGRESSO POR DATA: quantos registros de cada dia já foram marcados como FEITO */}
+            {dailyProdStats.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                {dailyProdStats.map((d) => (
+                  <div key={d.date} style={{ display: "flex", alignItems: "center", gap: 8, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "6px 10px" }}>
+                    <span style={{ fontSize: 10, color: C.green, fontWeight: 800 }}>{d.date}</span>
+                    <div style={{ width: 48, height: 6, background: C.border2, borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{ width: `${d.total > 0 ? Math.round((d.done / d.total) * 100) : 0}%`, height: "100%", background: C.green }} />
+                    </div>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: d.pending > 0 ? C.red : C.green }}>
+                      {d.pending > 0 ? `${d.pending} a fazer` : "concluído"}
+                    </span>
+                    <span style={{ fontSize: 9, color: C.textFaint }}>({d.done}/{d.total})</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
                 <thead>
                   {/* TOTAIS DO CÓDIGO NO TOPO */}
                   <tr style={{ background: "rgba(0, 212, 255, 0.15)", color: C.accent, fontWeight: 800, textAlign: "center" }}>
-                    <td colSpan="10" style={{ padding: "8px", textAlign: "right", letterSpacing: 1 }}>
+                    <td colSpan="11" style={{ padding: "8px", textAlign: "right", letterSpacing: 1 }}>
                       TOTAIS {selectedProdIds.size > 0 ? `(${selectedProdIds.size} LINHA(S) SELECIONADA(S))` : (selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`)} --&gt;
                     </td>
                     {CODE_FIELDS.map(f => (
@@ -3183,6 +3298,7 @@ function ProductionDashboard() {
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>
                       <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} title="Selecionar/desmarcar todas as linhas visíveis" style={{ cursor: "pointer" }} />
                     </th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.greenSoft, color: C.green }} title="Marcar como já produzido/concluído">FEITO</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DAILY</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
@@ -3206,24 +3322,28 @@ function ProductionDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredProduction.map((item) => {
+                  {visibleProduction.map((item) => {
                     const asbuiltText = computeAsbuiltFormat(item.codes);
                     const isSelected = selectedProdIds.has(item.id);
+                    const isDone = !!item.done;
                     return (
-                      <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}`, textAlign: "center", background: isSelected ? "rgba(0, 212, 255, 0.08)" : "transparent" }}>
+                      <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}`, textAlign: "center", background: isDone ? "rgba(0, 230, 118, 0.06)" : (isSelected ? "rgba(0, 212, 255, 0.08)" : "transparent"), opacity: isDone ? 0.7 : 1 }}>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
                           <input type="checkbox" checked={isSelected} onChange={() => toggleProdSelect(item.id)} style={{ cursor: "pointer" }} />
                         </td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.daily || '—'}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.amber, fontWeight: 700 }}>{item.pendings || '—'}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700 }}>{item.date}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text }}>{item.map}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.location}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700 }}>{item.splice}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
+                          <input type="checkbox" checked={isDone} onChange={() => toggleProdDone(item.id)} title="Marcar como já produzido/concluído" style={{ cursor: "pointer", width: 16, height: 16, accentColor: C.green }} />
+                        </td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.daily || '—'}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.amber, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.pendings || '—'}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.date}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text, textDecoration: isDone ? "line-through" : "none" }}>{item.map}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.location}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.splice}</td>
 
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.accent }}>{item.name}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.type}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>{item.typeEnd}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.accent, textDecoration: isDone ? "line-through" : "none" }}>{item.name}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.type}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.typeEnd}</td>
 
                         {CODE_FIELDS.map(f => (
                           <td key={f.id} style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: item.codes?.[f.id] ? C.green : C.textFaint, fontWeight: item.codes?.[f.id] ? 700 : 400 }}>
