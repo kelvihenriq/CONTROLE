@@ -234,6 +234,7 @@ const STORAGE_KEY_PRODUCTION = 'CONTROL_PRO_PRODUCTION_V1';
 const STORAGE_KEY_INVOICE_PRICES = 'CONTROL_PRO_INVOICE_PRICES_V1';
 const STORAGE_KEY_PENDINGS = 'CONTROL_PRO_PENDINGS_BY_MAP_V1';
 const STORAGE_KEY_REDLINES = 'CONTROL_PRO_REDLINES_V1';
+const STORAGE_KEY_MAP_DELIVERY_DAY = 'CONTROL_PRO_MAP_DELIVERY_DAY_V1';
 
 // Códigos Padrão de As-Built
 const CODE_FIELDS = [
@@ -1819,6 +1820,32 @@ function AutomacaoMapaTab({ productionRows = [], mapLabel = '' }) {
   );
 }
 
+// Migração do sistema antigo (Semana Atual/Anterior) para o novo (Semana 1-4) + migração para
+// histórico de datas (CICLO) + recuperação de crédito de atualizações antigas de Workbook/
+// Invoice/AS-BUILT que ficaram sem técnico no histórico (de antes da trava de nome obrigatório
+// existir) — usa o nome já salvo no campo do item como melhor palpite. Roda tanto nos dados
+// carregados do navegador quanto nos que chegam da nuvem, pra nenhum dos dois ficar pra trás.
+function migrateProjectsList(data) {
+  if (!Array.isArray(data)) return [];
+  return data.map((p) => {
+    let migrated = { ...p };
+    if (migrated.cycle === 'CURRENT_WEEK') migrated.cycle = 'SEMANA_1';
+    if (migrated.cycle === 'PREVIOUS_WEEK') migrated.cycle = 'SEMANA_2';
+    if (!Array.isArray(migrated.asbuiltHistory)) migrated.asbuiltHistory = migrated.asbuiltDate ? [migrated.asbuiltDate] : [];
+    if (!Array.isArray(migrated.workbookHistory)) migrated.workbookHistory = migrated.workbookDate ? [migrated.workbookDate] : [];
+    if (!Array.isArray(migrated.invoiceHistory)) migrated.invoiceHistory = migrated.invoiceDate ? [migrated.invoiceDate] : [];
+    const backfillTech = (hist, fallbackTech) => (Array.isArray(hist) ? hist : []).map((entry) => {
+      const date = historyEntryDate(entry);
+      const tech = historyEntryTech(entry);
+      return { date, tech: tech || (fallbackTech || '').trim() };
+    });
+    migrated.asbuiltHistory = backfillTech(migrated.asbuiltHistory, migrated.asbuiltTech);
+    migrated.workbookHistory = backfillTech(migrated.workbookHistory, migrated.workbookTech);
+    migrated.invoiceHistory = backfillTech(migrated.invoiceHistory, migrated.invoiceTech);
+    return migrated;
+  });
+}
+
 function ProductionDashboard() {
   // Carrega do localStorage se existir, senão usa o inicial
   const [projects, setProjects] = useState(() => {
@@ -1831,18 +1858,7 @@ function ProductionDashboard() {
         console.error("Erro ao carregar dados locais", e);
       }
     }
-    // Migração do sistema antigo (Semana Atual/Anterior) para o novo (Semana 1-4)
-    // + Migração para histórico de datas (CICLO): se o item ainda não tem histórico,
-    // cria um a partir da data única que já existia (sem perder o que já estava lá).
-    return data.map((p) => {
-      let migrated = { ...p };
-      if (migrated.cycle === 'CURRENT_WEEK') migrated.cycle = 'SEMANA_1';
-      if (migrated.cycle === 'PREVIOUS_WEEK') migrated.cycle = 'SEMANA_2';
-      if (!Array.isArray(migrated.asbuiltHistory)) migrated.asbuiltHistory = migrated.asbuiltDate ? [migrated.asbuiltDate] : [];
-      if (!Array.isArray(migrated.workbookHistory)) migrated.workbookHistory = migrated.workbookDate ? [migrated.workbookDate] : [];
-      if (!Array.isArray(migrated.invoiceHistory)) migrated.invoiceHistory = migrated.invoiceDate ? [migrated.invoiceDate] : [];
-      return migrated;
-    });
+    return migrateProjectsList(data);
   });
 
   // ===== HISTÓRICO DE ATUALIZAÇÕES (CICLO) — adiciona a data de hoje na etapa escolhida, junto com quem atualizou =====
@@ -2032,6 +2048,10 @@ function ProductionDashboard() {
   const [showPasteImportModal, setShowPasteImportModal] = useState(false);
   const [editingProd, setEditingProd] = useState(null);
   const [selectedMapProd, setSelectedMapProd] = useState("ALL");
+  // Filtro por dia de entrega na aba Produção (SEGUNDA/QUARTA/QUINTA/SEXTA), independente do
+  // filtro de dia usado no Dashboard — aqui não se restringe ao ciclo/semana aberta, olha o
+  // cadastro do mapa em TODOS os ciclos, já que a Produção junta o histórico inteiro.
+  const [selectedDeliveryDayProd, setSelectedDeliveryDayProd] = useState("ALL");
   const [copiedRowId, setCopiedRowId] = useState(null);
 
   // ===== COPIAR TEXTO PRONTO (LOCAL + SPLICE + CÓDIGOS) PARA COLAR NA AUTOMAÇÃO =====
@@ -2080,7 +2100,7 @@ function ProductionDashboard() {
       console.error('Erro ao salvar projetos:', e);
     }
   }, [projects]);
-  useCloudSync('projects', [projects], () => projects, (v) => setProjects(v));
+  useCloudSync('projects', [projects], () => projects, (v) => setProjects(migrateProjectsList(v)));
 
   const filteredAndSorted = useMemo(() => {
     return projects.filter((p) => {
@@ -2328,6 +2348,63 @@ function ProductionDashboard() {
   };
 
   // ===== LÓGICA DA ABA PRODUÇÃO & CÓDIGOS AS-BUILT =====
+  // ===== DIA DE ENTREGA POR MAPA, ATRIBUÍDO DIRETO AQUI NA PRODUÇÃO =====
+  // Independente do cadastro no Controle Geral: permite marcar o dia de entrega (SEGUNDA/
+  // QUARTA/QUINTA/SEXTA) de um mapa direto na aba Produção, pra classificar mesmo mapas que
+  // ainda não foram cadastrados lá (ou corrigir o dia sem precisar abrir o outro cadastro).
+  // Quando o mapa também está cadastrado no Controle Geral, esse valor aqui tem prioridade.
+  const [mapDeliveryDayOverrides, setMapDeliveryDayOverrides] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_MAP_DELIVERY_DAY) || 'null');
+      if (saved) return saved;
+    } catch (e) {}
+    return {};
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_MAP_DELIVERY_DAY, JSON.stringify(mapDeliveryDayOverrides)); } catch (e) { console.error('Erro ao salvar dia de entrega por mapa', e); }
+  }, [mapDeliveryDayOverrides]);
+  useCloudSync('map_delivery_day_overrides', [mapDeliveryDayOverrides], () => mapDeliveryDayOverrides, (v) => setMapDeliveryDayOverrides(v));
+
+  const setMapDeliveryDay = (mapName, day) => {
+    const key = (mapName || "").trim().toUpperCase();
+    if (!key) return;
+    setMapDeliveryDayOverrides(prev => {
+      const next = { ...prev };
+      if (!day) delete next[key];
+      else next[key] = day;
+      return next;
+    });
+  };
+
+  // Liga cada MAPA (código) ao dia de entrega: prioridade pro que foi definido manualmente aqui
+  // na Produção (mapDeliveryDayOverrides); se não tiver, cai pro cadastro do Controle Geral,
+  // olhando TODOS os ciclos/semanas (não só o aberto), já que a Produção acumula histórico de tudo.
+  const mapToDeliveryDay = useMemo(() => {
+    const lookup = {};
+    projects.forEach(p => {
+      const key = (p.map || "").trim().toUpperCase();
+      const day = (p.deliveryDay || "").trim().toUpperCase();
+      if (key && day) lookup[key] = day;
+    });
+    // Override manual (definido aqui na Produção) sempre vence o que veio do Controle Geral.
+    Object.entries(mapDeliveryDayOverrides).forEach(([key, day]) => {
+      if (day) lookup[key] = day;
+    });
+    return lookup;
+  }, [projects, mapDeliveryDayOverrides]);
+
+  const productionDeliveryDayOptions = useMemo(() => {
+    const set = new Set(Object.values(mapToDeliveryDay));
+    return Array.from(set).sort();
+  }, [mapToDeliveryDay]);
+
+  // Volta pra "Todos" se o dia selecionado sumir (ex: nenhum mapa mais cadastrado com esse dia)
+  useEffect(() => {
+    if (selectedDeliveryDayProd !== "ALL" && selectedDeliveryDayProd !== "SEM_ENTREGA" && !productionDeliveryDayOptions.includes(selectedDeliveryDayProd)) {
+      setSelectedDeliveryDayProd("ALL");
+    }
+  }, [productionDeliveryDayOptions, selectedDeliveryDayProd]);
+
   // Lista de mapas/projetos únicos existentes na produção, com contagem de registros de cada um
   const availableMaps = useMemo(() => {
     const counts = {};
@@ -2338,11 +2415,30 @@ function ProductionDashboard() {
     return Object.keys(counts).sort().map(map => ({ map, count: counts[map] }));
   }, [productionList]);
 
-  // Aplica o filtro de mapa selecionado antes da busca por texto
+  // Mesma lista acima, mas só com os mapas cujo dia de entrega cadastrado bate com o filtro
+  // selecionado (ou "SEM_ENTREGA" pra mapas com produção lançada mas ainda sem cadastro no
+  // Controle Geral — não têm como saber o dia de entrega ainda).
+  const availableMapsForSelectedDay = useMemo(() => {
+    if (selectedDeliveryDayProd === "ALL") return availableMaps;
+    return availableMaps.filter(({ map }) => {
+      const day = mapToDeliveryDay[map.trim().toUpperCase()];
+      return selectedDeliveryDayProd === "SEM_ENTREGA" ? !day : day === selectedDeliveryDayProd;
+    });
+  }, [availableMaps, mapToDeliveryDay, selectedDeliveryDayProd]);
+
+  // Aplica o filtro de dia de entrega, depois o filtro de mapa selecionado, antes da busca por texto
+  const productionByDay = useMemo(() => {
+    if (selectedDeliveryDayProd === "ALL") return productionList;
+    return productionList.filter(p => {
+      const day = mapToDeliveryDay[(p.map || "").trim().toUpperCase()];
+      return selectedDeliveryDayProd === "SEM_ENTREGA" ? !day : day === selectedDeliveryDayProd;
+    });
+  }, [productionList, mapToDeliveryDay, selectedDeliveryDayProd]);
+
   const productionByMap = useMemo(() => {
-    if (selectedMapProd === "ALL") return productionList;
-    return productionList.filter(p => (p.map || "SEM MAPA").trim() === selectedMapProd || (!p.map && selectedMapProd === "SEM MAPA"));
-  }, [productionList, selectedMapProd]);
+    if (selectedMapProd === "ALL") return productionByDay;
+    return productionByDay.filter(p => (p.map || "SEM MAPA").trim() === selectedMapProd || (!p.map && selectedMapProd === "SEM MAPA"));
+  }, [productionByDay, selectedMapProd]);
 
   const filteredProduction = useMemo(() => {
     return productionByMap.filter(p => !searchProd || JSON.stringify(p).toLowerCase().includes(searchProd.toLowerCase()));
@@ -3123,7 +3219,7 @@ function ProductionDashboard() {
         </div>
 
         {/* CONTROLES */}
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           {activeTab === "DASHBOARD" && (
             <>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
@@ -3162,16 +3258,82 @@ function ProductionDashboard() {
 
           {activeTab === "PRODUCTION_LIST" && (
             <>
+              {productionDeliveryDayOptions.length > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", width: "100%", marginBottom: 4 }}>
+                  <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>Entrega:</span>
+                  <button
+                    onClick={() => { setSelectedDeliveryDayProd("ALL"); setSelectedMapProd("ALL"); }}
+                    style={{
+                      background: selectedDeliveryDayProd === "ALL" ? C.accentSoft : C.panel2,
+                      color: selectedDeliveryDayProd === "ALL" ? C.accent : C.textDim,
+                      border: selectedDeliveryDayProd === "ALL" ? `1px solid ${C.accent}` : `1px solid ${C.border2}`,
+                      borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
+                    }}
+                  >
+                    TODOS ({productionList.length})
+                  </button>
+                  {productionDeliveryDayOptions.map((day) => {
+                    const count = productionList.filter(p => mapToDeliveryDay[(p.map || "").trim().toUpperCase()] === day).length;
+                    const active = selectedDeliveryDayProd === day;
+                    return (
+                      <button
+                        key={day}
+                        onClick={() => { setSelectedDeliveryDayProd(day); setSelectedMapProd("ALL"); }}
+                        style={{
+                          background: active ? C.accentSoft : C.panel2,
+                          color: active ? C.accent : C.textDim,
+                          border: active ? `1px solid ${C.accent}` : `1px solid ${C.border2}`,
+                          borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
+                        }}
+                      >
+                        {day} ({count})
+                      </button>
+                    );
+                  })}
+                  <button
+                    onClick={() => { setSelectedDeliveryDayProd("SEM_ENTREGA"); setSelectedMapProd("ALL"); }}
+                    title="Mapas com produção lançada mas ainda sem cadastro no Controle Geral"
+                    style={{
+                      background: selectedDeliveryDayProd === "SEM_ENTREGA" ? C.accentSoft : C.panel2,
+                      color: selectedDeliveryDayProd === "SEM_ENTREGA" ? C.accent : C.textDim,
+                      border: selectedDeliveryDayProd === "SEM_ENTREGA" ? `1px solid ${C.accent}` : `1px solid ${C.border2}`,
+                      borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
+                    }}
+                  >
+                    SEM ENTREGA ({productionList.filter(p => !mapToDeliveryDay[(p.map || "").trim().toUpperCase()]).length})
+                  </button>
+                </div>
+              )}
+
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
                 <List size={13} color={C.green} />
                 <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Mapa:</span>
                 <select value={selectedMapProd} onChange={(e) => setSelectedMapProd(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer", maxWidth: 200 }}>
-                  <option value="ALL" style={{ background: C.panel }}>Todos os Mapas ({productionList.length})</option>
-                  {availableMaps.map(({ map, count }) => (
+                  <option value="ALL" style={{ background: C.panel }}>Todos os Mapas ({productionByDay.length})</option>
+                  {availableMapsForSelectedDay.map(({ map, count }) => (
                     <option key={map} value={map} style={{ background: C.panel }}>{map} ({count})</option>
                   ))}
                 </select>
               </div>
+
+              {selectedMapProd !== "ALL" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "4px 8px" }}>
+                  <Calendar size={13} color={C.accent} />
+                  <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Entrega deste mapa:</span>
+                  <select
+                    value={mapToDeliveryDay[selectedMapProd.trim().toUpperCase()] || ""}
+                    onChange={(e) => setMapDeliveryDay(selectedMapProd, e.target.value)}
+                    title="Define o dia de entrega deste mapa (usado nas abas Entrega aqui e no Dashboard)"
+                    style={{ background: "transparent", color: C.accent, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer" }}
+                  >
+                    <option value="" style={{ background: C.panel, color: C.textDim }}>— Sem entrega definida —</option>
+                    <option value="SEGUNDA" style={{ background: C.panel }}>SEGUNDA</option>
+                    <option value="QUARTA" style={{ background: C.panel }}>QUARTA</option>
+                    <option value="QUINTA" style={{ background: C.panel }}>QUINTA</option>
+                    <option value="SEXTA" style={{ background: C.panel }}>SEXTA</option>
+                  </select>
+                </div>
+              )}
 
               <button onClick={exportProdXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.purple, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
                 <Download size={14} /> Exportar {selectedMapProd === "ALL" ? "Tudo" : "Mapa Atual"} (.XLSX Colorido)
@@ -4267,6 +4429,12 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
   const handleWorkbookStatusChange = (e) => {
     const val = e.target.value;
+    // Mesma trava do AS-BUILT: exige o nome do técnico antes de marcar SIM, senão a
+    // atualização fica sem dono e some da pontuação de "Desempenho Colaborador".
+    if (val === "SIM" && !(form.workbookTech || '').trim()) {
+      alert('Preencha o campo "Técnico Workbook" antes de marcar como ATUALIZADO (SIM) — sem o nome, a atualização não conta na pontuação do colaborador.');
+      return;
+    }
     setForm(f => {
       const currentHistory = Array.isArray(f.workbookHistory) ? f.workbookHistory : [];
       const workbookHistory = val === "SIM" && !historyHasDate(currentHistory, today)
@@ -4283,6 +4451,12 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
   const handleInvoiceStatusChange = (e) => {
     const val = e.target.value;
+    // Mesma trava do AS-BUILT: exige o nome do técnico antes de marcar SIM, senão a
+    // atualização fica sem dono e some da pontuação de "Desempenho Colaborador".
+    if (val === "SIM" && !(form.invoiceTech || '').trim()) {
+      alert('Preencha o campo "Técnico Invoice" antes de marcar como ATUALIZADO (SIM) — sem o nome, a atualização não conta na pontuação do colaborador.');
+      return;
+    }
     setForm(f => {
       const currentHistory = Array.isArray(f.invoiceHistory) ? f.invoiceHistory : [];
       const invoiceHistory = val === "SIM" && !historyHasDate(currentHistory, today)
