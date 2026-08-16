@@ -228,6 +228,18 @@ const WEEK_OPTIONS = [
 const COMPANY_HEADER_TEXT = "DBA STEVENS COMMUNICATIONS\n313 CINDA DR, GARNER, NC\nPHONE:+1 (919) 389-7977\nEMAIL: RYAN.STEVENS@STEVCOMMS.NET";
 const STORAGE_KEY_OPEN_WEEK = 'CONTROL_PRO_OPEN_WEEK_V1';
 const STORAGE_KEY_ARCHIVE = 'CONTROL_PRO_MONTH_ARCHIVE_V1';
+const STORAGE_KEY_WEEK_RANGES = 'CONTROL_PRO_WEEK_DATE_RANGES_V1';
+
+// Formata o rótulo de uma semana (ex: "Semana 1") incluindo o intervalo de datas cadastrado
+// pra ela (ex: "Semana 1 (01/08 - 07/08)"), se houver. Sem datas cadastradas, cai no rótulo puro.
+function formatWeekLabel(week, weekDateRanges) {
+  const range = weekDateRanges && weekDateRanges[week.id];
+  if (range && range.from && range.to) {
+    const fmt = (d) => { const parts = (d || "").split("-"); return parts.length === 3 ? `${parts[2]}/${parts[1]}` : d; };
+    return `${week.label} (${fmt(range.from)} - ${fmt(range.to)})`;
+  }
+  return week.label;
+}
 
 // ===== ABA PRODUÇÃO & CÓDIGOS AS-BUILT =====
 const STORAGE_KEY_PRODUCTION = 'CONTROL_PRO_PRODUCTION_V1';
@@ -578,6 +590,19 @@ function WeeklyActivityHeatmap({ asbuiltHistory, workbookHistory, invoiceHistory
 }
 
 function StageBadge({ status, tech, date }) {
+  if (status === "ENTREGUE") {
+    return (
+      <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ background: C.pinkSoft, color: C.pink, border: `1px solid ${C.pink}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>ENTREGUE</span>
+        {tech && (
+          <div style={{ fontSize: 9, color: C.pink, fontWeight: 600 }}>
+            Por: <span style={{ color: C.text }}>{tech}</span>
+            {date && <span style={{ color: C.textDim, display: "block", fontSize: 8.5 }}>Em: {date}</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
   if (status === "OK" || status === "SIM") {
     return (
       <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
@@ -1886,6 +1911,26 @@ function ProductionDashboard() {
   }, [openWeek]);
   useCloudSync('open_week', [openWeek], () => openWeek, (v) => setOpenWeek(v));
 
+  // Intervalo de datas (De/Até) cadastrado pra cada Semana (1-4) — ex: Semana 1 = 01/08 a 07/08.
+  // Puramente informativo/organizacional: não filtra os itens automaticamente, só aparece junto
+  // do rótulo da semana em todo lugar do sistema, pra facilitar saber qual data corresponde a
+  // qual semana. { SEMANA_1: { from: "2026-08-01", to: "2026-08-07" }, ... }
+  const [weekDateRanges, setWeekDateRanges] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_WEEK_RANGES) || 'null');
+      if (saved) return saved;
+    } catch (e) {}
+    return {};
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_WEEK_RANGES, JSON.stringify(weekDateRanges)); } catch (e) { console.error('Erro ao salvar datas das semanas', e); }
+  }, [weekDateRanges]);
+  useCloudSync('week_date_ranges', [weekDateRanges], () => weekDateRanges, (v) => setWeekDateRanges(v));
+  const [showWeekDatesModal, setShowWeekDatesModal] = useState(false);
+  const setWeekDateRange = (weekId, field, value) => {
+    setWeekDateRanges(prev => ({ ...prev, [weekId]: { ...(prev[weekId] || {}), [field]: value } }));
+  };
+
   // ===== ARQUIVO/HISTÓRICO MENSAL (reset manual das semanas) =====
   const [archives, setArchives] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY_ARCHIVE);
@@ -1916,7 +1961,35 @@ function ProductionDashboard() {
       projects
     };
     setArchives((prev) => [snapshot, ...prev]);
-    setProjects([]);
+
+    // Pergunta se quer levar a LISTA DE MAPAS pro mês novo, já cadastrada (só código + dia de
+    // entrega — sem OTs, sem status, como se fosse tudo novo), em vez de ter que digitar de novo.
+    const carryOver = confirm('Mês arquivado! Quer copiar a LISTA DE MAPAS (só mapa + dia de entrega, tudo zerado — sem OTs, sem status) para o novo mês já cadastrada, em vez de começar do zero?\n\nCada mapa único vira 1 item novo, pronto pra receber OTs no mês que está começando.');
+
+    if (carryOver) {
+      const seen = new Set();
+      const freshItems = [];
+      projects.forEach((item, idx) => {
+        const key = (item.map || '').trim().toUpperCase();
+        if (!key || seen.has(key)) return; // um mapa pode aparecer em várias semanas do mês antigo — só 1 cópia
+        seen.add(key);
+        freshItems.push({
+          id: `item-${Date.now()}-${idx}`,
+          deliveryDay: item.deliveryDay || "QUINTA",
+          cycle: 'SEMANA_1',
+          map: item.map || '',
+          status: "NO_UPDATE",
+          otCount: 0,
+          asbuiltStatus: "SEM_ATUALIZACAO_SEMANA", asbuiltDate: "", asbuiltTech: "", asbuiltHistory: [],
+          invoiceStatus: "PENDENTE", invoiceDate: "", invoiceTech: "", invoiceHistory: [],
+          workbookStatus: "PENDENTE", workbookDate: "", workbookTech: "", workbookHistory: [],
+          note: ""
+        });
+      });
+      setProjects(freshItems);
+    } else {
+      setProjects([]);
+    }
     setOpenWeek('SEMANA_1');
     setSelectedCycle('SEMANA_1');
   };
@@ -2161,8 +2234,8 @@ function ProductionDashboard() {
   // oscilar sem relação nenhuma com o trabalho de invoice/workbook em si.
   const queueStageStats = useMemo(() => {
     const total = generalTableItems.length;
-    const asbuiltDone = generalTableItems.filter(p => p.asbuiltStatus === "OK").length;
-    const invoiceDone = generalTableItems.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK").length;
+    const asbuiltDone = generalTableItems.filter(p => p.asbuiltStatus === "OK" || p.asbuiltStatus === "ENTREGUE").length;
+    const invoiceDone = generalTableItems.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK" || p.invoiceStatus === "ENTREGUE").length;
     const workbookDone = generalTableItems.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK").length;
     const pct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
     return {
@@ -2234,7 +2307,7 @@ function ProductionDashboard() {
 
   const kpis = useMemo(() => {
     const total = filteredAndSorted.length;
-    const ok = filteredAndSorted.filter(p => p.status === "OK" || (p.asbuiltStatus === "OK" && p.invoiceStatus === "SIM" && p.workbookStatus === "SIM")).length;
+    const ok = filteredAndSorted.filter(p => p.status === "OK" || ((p.asbuiltStatus === "OK" || p.asbuiltStatus === "ENTREGUE") && (p.invoiceStatus === "SIM" || p.invoiceStatus === "ENTREGUE") && p.workbookStatus === "SIM")).length;
     const pending = total - ok;
     const totalOTs = filteredAndSorted.reduce((acc, p) => acc + (p.otCount || 0), 0);
     // Total equivalente pela Produção: soma, por mapa presente neste ciclo, das linhas de Produção
@@ -2246,7 +2319,7 @@ function ProductionDashboard() {
       if (mapsInCycle.has(mapKey) && !p.done) return acc + 1;
       return acc;
     }, 0);
-    const invoiceUpdated = filteredAndSorted.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK").length;
+    const invoiceUpdated = filteredAndSorted.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK" || p.invoiceStatus === "ENTREGUE").length;
     const workbookUpdated = filteredAndSorted.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK").length;
     const rate = total > 0 ? Math.round((ok / total) * 100) : 0;
 
@@ -2265,12 +2338,14 @@ function ProductionDashboard() {
     const submittedOtCount = Number(item.otCount || 0);
 
     // Se surgiram OTs novas (ex: chegaram mais demandas depois do AS-BUILT já ter sido
-    // marcado como "Atualizado" hoje), isso significa que o AS-BUILT atual não cobre mais
-    // o mapa inteiro — então volta o status pra PENDENTE automaticamente, pra reentrar na
-    // Fila de Prioridade, em vez de simplesmente descartar as OTs que acabaram de ser somadas.
-    const asbuiltStatus = (submittedOtCount > 0 && item.asbuiltStatus === "OK") ? "PENDENTE" : item.asbuiltStatus;
+    // marcado como "Atualizado"/"Entregue" hoje), isso significa que o AS-BUILT atual não
+    // cobre mais o mapa inteiro — então volta o status pra PENDENTE automaticamente, pra
+    // reentrar na Fila de Prioridade, em vez de simplesmente descartar as OTs recém-somadas.
+    const asbuiltStatus = (submittedOtCount > 0 && (item.asbuiltStatus === "OK" || item.asbuiltStatus === "ENTREGUE")) ? "PENDENTE" : item.asbuiltStatus;
 
-    const isFullyDone = asbuiltStatus === "OK" && item.invoiceStatus === "SIM" && item.workbookStatus === "SIM";
+    const isFullyDone = (asbuiltStatus === "OK" || asbuiltStatus === "ENTREGUE")
+      && (item.invoiceStatus === "SIM" || item.invoiceStatus === "ENTREGUE")
+      && item.workbookStatus === "SIM";
 
     const finalItem = {
       ...item,
@@ -3021,9 +3096,9 @@ function ProductionDashboard() {
       return s;
     };
 
-    const stageLabel = (st) => (st === "OK" || st === "SIM") ? "ATUALIZADO" : (st === "FAZENDO" ? "FAZENDO" : (st === "SEM_ATUALIZACAO_SEMANA" ? "SEM ATUALIZAÇÃO NA SEMANA" : "PENDENTE"));
+    const stageLabel = (st) => st === "ENTREGUE" ? "ENTREGUE" : (st === "OK" || st === "SIM") ? "ATUALIZADO" : (st === "FAZENDO" ? "FAZENDO" : (st === "SEM_ATUALIZACAO_SEMANA" ? "SEM ATUALIZAÇÃO NA SEMANA" : "PENDENTE"));
     const generalLabel = (st) => st === "OK" ? "PRONTO" : (st === "PENDING_REVISION" ? "REVISÃO NECESSÁRIA" : "SEM ATUALIZAÇÃO");
-    const weekLabel = (cycleId) => (WEEK_OPTIONS.find(w => w.id === cycleId) || {}).label || cycleId || '';
+    const weekLabel = (cycleId) => { const w = WEEK_OPTIONS.find(w => w.id === cycleId); return w ? formatWeekLabel(w, weekDateRanges) : (cycleId || ''); };
 
     const wb = new window.ExcelJS.Workbook();
     const ws = wb.addWorksheet('Controle Geral');
@@ -3054,6 +3129,8 @@ function ProductionDashboard() {
     const redFont = { color: { argb: 'FF9C0006' }, bold: true };
     const grayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E5E5' } };
     const grayFont = { color: { argb: 'FF666666' } };
+    const pinkFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFD6E8' } };
+    const pinkFont = { color: { argb: 'FFB0206B' }, bold: true };
     const otFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB3E5FC' } };
     const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
 
@@ -3087,7 +3164,8 @@ function ProductionDashboard() {
       stageStatusCols.forEach((colIdx, i) => {
         const st = stageStatuses[i];
         const cell = ws.getRow(r).getCell(colIdx);
-        if (st === "OK" || st === "SIM") { cell.fill = greenFill; cell.font = greenFont; }
+        if (st === "ENTREGUE") { cell.fill = pinkFill; cell.font = pinkFont; }
+        else if (st === "OK" || st === "SIM") { cell.fill = greenFill; cell.font = greenFont; }
         else if (st === "FAZENDO") { cell.fill = amberFill; cell.font = amberFont; }
         else if (st === "SEM_ATUALIZACAO_SEMANA") { cell.fill = grayFill; cell.font = grayFont; }
         else { cell.fill = redFill; cell.font = redFont; }
@@ -3227,7 +3305,7 @@ function ProductionDashboard() {
                 <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Ciclo:</span>
                 <select value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer" }}>
                   {WEEK_OPTIONS.map((w) => (
-                    <option key={w.id} value={w.id} style={{ background: C.panel }}>{w.label} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
+                    <option key={w.id} value={w.id} style={{ background: C.panel }}>{formatWeekLabel(w, weekDateRanges)} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
                   ))}
                   <option value="ALL" style={{ background: C.panel }}>Todos os Ciclos</option>
                 </select>
@@ -3237,10 +3315,14 @@ function ProductionDashboard() {
                 <span style={{ fontSize: 10, color: C.green, fontWeight: 700, textTransform: "uppercase" }}>Semana Aberta (Ativa):</span>
                 <select value={openWeek} onChange={(e) => setOpenWeek(e.target.value)} style={{ background: "transparent", color: C.green, border: "none", fontSize: 11, outline: "none", fontWeight: 800, cursor: "pointer" }}>
                   {WEEK_OPTIONS.map((w) => (
-                    <option key={w.id} value={w.id} style={{ background: C.panel, color: C.text }}>{w.label}</option>
+                    <option key={w.id} value={w.id} style={{ background: C.panel, color: C.text }}>{formatWeekLabel(w, weekDateRanges)}</option>
                   ))}
                 </select>
               </div>
+
+              <button onClick={() => setShowWeekDatesModal(true)} title="Definir as datas (De/Até) de cada semana, ex: Semana 1 = 01/08 a 07/08" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                <Calendar size={13} /> Datas das Semanas
+              </button>
 
               <button onClick={handleResetMonth} title="Baixa um .xlsx com tudo do mês, arquiva os itens atuais e reinicia as Semanas 1-4 do zero (use quando virar o mês)" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
                 <RotateCcw size={13} /> Novo Mês (Resetar Semanas)
@@ -3805,8 +3887,8 @@ function ProductionDashboard() {
         </div>
         </div>
 
-        {/* TABELA 1: PRIORIDADE DA FILA */}
-        <Panel title="PRIORIDADE DA FILA (ORDENADO POR MAIOR QTD DE OTS PENDENTES)" style={{ marginBottom: 18 }}>
+        {/* PROGRESSO DO DIA DE ENTREGA (AS-BUILT / INVOICE / WORKBOOK) */}
+        <Panel title="PROGRESSO POR DIA DE ENTREGA" style={{ marginBottom: 18 }}>
 
           {/* ABAS POR DIA DE ENTREGA (sincronizadas com o Controle Geral) */}
           {deliveryDayOptions.length > 0 && (
@@ -3846,7 +3928,7 @@ function ProductionDashboard() {
 
           {/* PROGRESSÃO SEPARADA POR ETAPA, DENTRO DO DIA DE ENTREGA SELECIONADO */}
           {queueStageStats.total > 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
               {[
                 { label: "AS-BUILT", data: queueStageStats.asbuilt, color: C.accent },
                 { label: "INVOICE", data: queueStageStats.invoice, color: C.green },
@@ -3866,48 +3948,8 @@ function ProductionDashboard() {
             </div>
           )}
 
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
-              <thead>
-                <tr style={{ color: C.textDim, textAlign: "left", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 9.5, letterSpacing: 0.8 }}>
-                  <th style={{ padding: "8px 6px" }}>PRIORIDADE / OTS</th>
-                  <th style={{ padding: "8px 6px" }}>MAPA / CÓDIGO</th>
-                  <th style={{ padding: "8px 6px" }}>TRABALHO AS-BUILT</th>
-                  <th style={{ padding: "8px 6px" }}>TRABALHO INVOICE</th>
-                  <th style={{ padding: "8px 6px" }}>TRABALHO WORKBOOK</th>
-                  <th style={{ padding: "8px 6px", textAlign: "right" }}>AÇÃO / ATUALIZAR</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredQueueItems.length > 0 ? filteredQueueItems.map((item, idx) => (
-                  <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
-                    <td style={{ padding: "8px 6px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ color: C.textDim, fontWeight: 700, fontSize: 10 }}>#{idx + 1}</span>
-                        <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 12, fontWeight: 800, fontSize: 10 }}>
-                          {item.otCount} OTs PENDENTES
-                        </span>
-                      </div>
-                    </td>
-                    <td style={{ padding: "8px 6px", fontWeight: 700, color: C.text }}>{item.map}</td>
-                    <td style={{ padding: "8px 6px" }}><StageBadge status={item.asbuiltStatus} tech={item.asbuiltTech} date={item.asbuiltDate} /></td>
-                    <td style={{ padding: "8px 6px" }}><StageBadge status={item.invoiceStatus} tech={item.invoiceTech} date={item.invoiceDate} /></td>
-                    <td style={{ padding: "8px 6px" }}><StageBadge status={item.workbookStatus} tech={item.workbookTech} date={item.workbookDate} /></td>
-                    <td style={{ padding: "8px 6px", textAlign: "right" }}>
-                      <button onClick={() => { setEditingItem(item); setModalMode("QUEUE"); setShowModal(true); }} style={{ background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 4, padding: "4px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                        <Edit2 size={11} /> Atualizar Item
-                      </button>
-                    </td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td colSpan="6" style={{ padding: 12, textAlign: "center", color: C.green }}>
-                      {selectedDeliveryDay !== "ALL" ? `Nenhum mapa com OTs pendentes na entrega de ${selectedDeliveryDay}!` : "Nenhum mapa com OTs pendentes na fila!"}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+          <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 14 }}>
+            Pra atualizar um mapa, use a tabela "Controle Geral" logo abaixo — clique no lápis ✎ na coluna Ações pra abrir o cadastro completo (AS-BUILT, Invoice e Workbook).
           </div>
         </Panel>
 
@@ -4045,6 +4087,7 @@ function ProductionDashboard() {
           mode={modalMode}
           openWeek={openWeek}
           productionList={productionList}
+          weekDateRanges={weekDateRanges}
           onClose={() => { setShowModal(false); setEditingItem(null); }}
           onSave={handleSaveItem}
         />
@@ -4089,6 +4132,46 @@ function ProductionDashboard() {
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
               <button onClick={() => setShowArchiveModal(false)} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DATAS DAS SEMANAS (De/Até por Semana 1-4) */}
+      {showWeekDatesModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+          <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 480, maxHeight: "85vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+              <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent, display: "flex", alignItems: "center", gap: 8 }}>
+                <Calendar size={16} /> Datas das Semanas
+              </div>
+              <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => setShowWeekDatesModal(false)} />
+            </div>
+            <div style={{ fontSize: 10, color: C.textDim, marginBottom: 14, lineHeight: 1.5 }}>
+              Defina o intervalo de datas de cada semana (ex: Semana 1 = 01/08 a 07/08). É só organizacional — aparece junto do nome da semana em todo o sistema (seletor de Ciclo, cadastro de item, exportação Excel), mas não muda quais itens pertencem a qual semana; isso continua sendo feito pela "Semana Aberta" e pelo campo "Atribuir à Semana" de cada item.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {WEEK_OPTIONS.map((w) => {
+                const range = weekDateRanges[w.id] || {};
+                return (
+                  <div key={w.id} style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 12 }}>
+                    <div style={{ fontWeight: 800, color: w.id === openWeek ? C.green : C.text, fontSize: 12, marginBottom: 8 }}>
+                      {w.label} {w.id === openWeek ? "(Aberta)" : ""}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <Field label="De">
+                        <Input type="date" value={range.from || ""} onChange={(e) => setWeekDateRange(w.id, "from", e.target.value)} />
+                      </Field>
+                      <Field label="Até">
+                        <Input type="date" value={range.to || ""} onChange={(e) => setWeekDateRange(w.id, "to", e.target.value)} />
+                      </Field>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
+              <button onClick={() => setShowWeekDatesModal(false)} style={{ background: C.green, border: "none", color: "#000", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Concluído</button>
             </div>
           </div>
         </div>
@@ -4335,7 +4418,7 @@ function ProductionModal({ initial, onClose, onSave }) {
   );
 }
 
-function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, productionList = [] }) {
+function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, productionList = [], weekDateRanges = {} }) {
   const today = new Date().toISOString().slice(0, 10);
   const [addOtInput, setAddOtInput] = useState("");
   const isQueueMode = mode === "QUEUE";
@@ -4400,18 +4483,18 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
   const handleAsBuiltStatusChange = (e) => {
     const val = e.target.value;
-    const countsAsActivity = val === "OK" || val === "FAZENDO";
+    const countsAsActivity = val === "OK" || val === "FAZENDO" || val === "ENTREGUE";
 
-    // Exige o nome do técnico ANTES de deixar marcar FAZENDO/ATUALIZADO — assim o mapa já
-    // fica "pegado" por quem vai executar, e esse nome é reaproveitado quando finalizar.
+    // Exige o nome do técnico ANTES de deixar marcar FAZENDO/ATUALIZADO/ENTREGUE — assim o
+    // mapa já fica "pegado" por quem vai executar, e esse nome é reaproveitado quando finalizar.
     if (countsAsActivity && !(form.asbuiltTech || '').trim()) {
-      alert('Preencha o campo "Seu Nome (Técnico)" antes de marcar FAZENDO ou ATUALIZADO.');
+      alert('Preencha o campo "Seu Nome (Técnico)" antes de marcar FAZENDO, ATUALIZADO ou ENTREGUE.');
       return;
     }
 
     setForm(f => {
-      // Marcar FAZENDO ou ATUALIZADO (OK) já conta como atividade do dia no Ciclo (Sáb-Sex),
-      // sem precisar clicar manualmente em "+Hoje" depois no Controle Geral.
+      // Marcar FAZENDO, ATUALIZADO (OK) ou ENTREGUE já conta como atividade do dia no Ciclo
+      // (Sáb-Sex), sem precisar clicar manualmente em "+Hoje" depois no Controle Geral.
       const currentHistory = Array.isArray(f.asbuiltHistory) ? f.asbuiltHistory : [];
       const asbuiltHistory = countsAsActivity && !historyHasDate(currentHistory, today)
         ? [...currentHistory, { date: today, tech: (f.asbuiltTech || '').trim() }]
@@ -4421,8 +4504,8 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
         asbuiltStatus: val,
         asbuiltDate: countsAsActivity && !f.asbuiltDate ? today : f.asbuiltDate,
         asbuiltHistory,
-        // OTs pendentes só zeram quando marcado como ATUALIZADO (OK) — "FAZENDO" mantém a fila.
-        otCount: val === "OK" ? 0 : f.otCount
+        // OTs pendentes só zeram quando marcado como ATUALIZADO (OK) ou ENTREGUE — "FAZENDO" mantém a fila.
+        otCount: (val === "OK" || val === "ENTREGUE") ? 0 : f.otCount
       };
     });
   };
@@ -4451,21 +4534,22 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
   const handleInvoiceStatusChange = (e) => {
     const val = e.target.value;
-    // Mesma trava do AS-BUILT: exige o nome do técnico antes de marcar SIM, senão a
+    const countsAsActivity = val === "SIM" || val === "ENTREGUE";
+    // Mesma trava do AS-BUILT: exige o nome do técnico antes de marcar SIM/ENTREGUE, senão a
     // atualização fica sem dono e some da pontuação de "Desempenho Colaborador".
-    if (val === "SIM" && !(form.invoiceTech || '').trim()) {
-      alert('Preencha o campo "Técnico Invoice" antes de marcar como ATUALIZADO (SIM) — sem o nome, a atualização não conta na pontuação do colaborador.');
+    if (countsAsActivity && !(form.invoiceTech || '').trim()) {
+      alert('Preencha o campo "Técnico Invoice" antes de marcar como ATUALIZADO (SIM) ou ENTREGUE — sem o nome, a atualização não conta na pontuação do colaborador.');
       return;
     }
     setForm(f => {
       const currentHistory = Array.isArray(f.invoiceHistory) ? f.invoiceHistory : [];
-      const invoiceHistory = val === "SIM" && !historyHasDate(currentHistory, today)
+      const invoiceHistory = countsAsActivity && !historyHasDate(currentHistory, today)
         ? [...currentHistory, { date: today, tech: (f.invoiceTech || '').trim() }]
         : currentHistory;
       return {
         ...f,
         invoiceStatus: val,
-        invoiceDate: val === "SIM" && !f.invoiceDate ? today : f.invoiceDate,
+        invoiceDate: countsAsActivity && !f.invoiceDate ? today : f.invoiceDate,
         invoiceHistory
       };
     });
@@ -4507,6 +4591,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
                 <option value="PENDENTE">PENDENTE</option>
                 <option value="FAZENDO">FAZENDO (Em Andamento)</option>
                 <option value="OK">ATUALIZADO (OK)</option>
+                <option value="ENTREGUE">ENTREGUE</option>
               </select>
             </Field>
             <Field label="Seu Nome (Técnico)"><Input placeholder="Nome de quem está atualizando..." value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
@@ -4539,7 +4624,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
           <Field label="Atribuir à Semana">
             <select value={form.cycle} onChange={set("cycle")} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
               {WEEK_OPTIONS.map((w) => (
-                <option key={w.id} value={w.id}>{w.label} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
+                <option key={w.id} value={w.id}>{formatWeekLabel(w, weekDateRanges)} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
               ))}
             </select>
           </Field>
@@ -4582,6 +4667,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
                   <option value="PENDENTE">PENDENTE</option>
                   <option value="FAZENDO">FAZENDO (Em Andamento)</option>
                   <option value="OK">ATUALIZADO (OK)</option>
+                  <option value="ENTREGUE">ENTREGUE</option>
                 </select>
               </Field>
               <Field label="Data AS-BUILT"><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
@@ -4614,6 +4700,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
               <select value={form.invoiceStatus} onChange={handleInvoiceStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
                 <option value="SIM">SIM (ATUALIZADO)</option>
                 <option value="PENDENTE">NÃO / PENDENTE</option>
+                <option value="ENTREGUE">ENTREGUE</option>
               </select>
             </Field>
             <Field label="Data Atualização Invoice"><Input type="date" value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
