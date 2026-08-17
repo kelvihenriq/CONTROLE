@@ -3545,7 +3545,7 @@ function ProductionDashboard() {
                 ))}
               </div>
             )}
-            <div style={{ overflowX: "auto" }}>
+            <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "70vh", border: `1px solid ${C.border2}`, borderRadius: 6 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
                 <thead>
                   {/* TOTAIS DO CÓDIGO NO TOPO */}
@@ -3562,32 +3562,32 @@ function ProductionDashboard() {
                     <td style={{ padding: "8px", background: C.panel2 }}></td>
                   </tr>
 
-                  {/* CABEÇALHOS */}
+                  {/* CABEÇALHOS (fixo ao rolar) */}
                   <tr style={{ background: C.panel2, color: C.text, textAlign: "center", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 10, fontWeight: 700 }}>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2, position: "sticky", top: 0, zIndex: 5 }}>
                       <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} title="Selecionar/desmarcar todas as linhas visíveis" style={{ cursor: "pointer" }} />
                     </th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.greenSoft, color: C.green }} title="Marcar como já produzido/concluído">FEITO</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DAILY</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>MAP</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>LOCATION</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>SPLICE</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>NAME</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>TYPE</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>TYPE</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.greenSoft, color: C.green, position: "sticky", top: 0, zIndex: 5 }} title="Marcar como já produzido/concluído">FEITO</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>DAILY</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>PENDINGS</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>DATE</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>MAP</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>LOCATION</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>SPLICE</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>NAME</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>TYPE</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green, position: "sticky", top: 0, zIndex: 5 }}>TYPE</th>
 
                     {CODE_FIELDS.map(f => (
-                      <th key={f.id} style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#2e3b1b", color: "#a2e048", minWidth: 45 }}>
+                      <th key={f.id} style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#2e3b1b", color: "#a2e048", minWidth: 45, position: "sticky", top: 0, zIndex: 5 }}>
                         {f.label}
                       </th>
                     ))}
 
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#182a3a", color: C.accent, fontWeight: 800 }}>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#182a3a", color: C.accent, fontWeight: 800, position: "sticky", top: 0, zIndex: 5 }}>
                       ASBUILT (GERADO)
                     </th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>AÇÕES</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2, position: "sticky", top: 0, zIndex: 5 }}>AÇÕES</th>
                   </tr>
                 </thead>
                 <tbody>
