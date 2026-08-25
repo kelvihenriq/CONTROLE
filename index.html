@@ -1973,14 +1973,19 @@ function DriveScanTab() {
 
           let mapPending = [];
           let mapTotal = 0;
-          wb.SheetNames.forEach((sheetName) => {
-            const rows = window.XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: false, defval: '' });
+          // Só a aba principal de produção conta — evita somar rascunhos, cópias
+          // e abas de invoices antigos que também moram dentro do mesmo arquivo.
+          const isDraftSheetName = (name) => /rascunho|c[oó]pia|draft|invoice\s*\d|hist[oó]rico|antig/i.test(name);
+          const mainSheetName = wb.SheetNames.find((n) => !isDraftSheetName(n)) || wb.SheetNames[0];
+
+          if (mainSheetName) {
+            const rows = window.XLSX.utils.sheet_to_json(wb.Sheets[mainSheetName], { header: 1, raw: false, defval: '' });
             const parsed = parseProductionSheetRows(rows);
             if (parsed.pending.length > 0) {
-              mapPending = mapPending.concat(parsed.pending.map((p) => ({ ...p, sheet: sheetName })));
+              mapPending = parsed.pending.map((p) => ({ ...p, sheet: mainSheetName }));
             }
-            mapTotal += parsed.total;
-          });
+            mapTotal = parsed.total;
+          }
 
           const mapName = (f.name || '')
             .replace(/PRODUCTION\s*LIST/i, '')
