@@ -2073,6 +2073,117 @@ function DriveScanTab() {
     }
   };
 
+  // ===== EXPORTAR .XLSX COLORIDO DA VARREDURA DO DRIVE (mesmo padrão visual do "Exportar XLSX" =====
+  // do CONTROLE GERAL): cabeçalho escuro, linhas vermelhas pra mapas com pendência, verdes pra em dia,
+  // cinza pra erro de leitura. Uma linha por pendência encontrada (ou uma linha única se estiver em dia/erro).
+  const exportScanXLSX = async () => {
+    if (!window.ExcelJS) {
+      alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
+      return;
+    }
+    if (!results.length) { alert('Nenhuma varredura feita ainda — clique em "Escanear Agora" primeiro.'); return; }
+
+    const headers = [
+      "MAPA", "ARQUIVO", "MODIFICADO EM", "SITUAÇÃO",
+      "DATA (LINHA)", "LOCATION", "SPLICE", "TÉCNICO", "TIPO", "LINK"
+    ];
+    const totalCols = headers.length;
+    const colLetter = (n) => {
+      let s = '';
+      while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+      return s;
+    };
+
+    const wb = new window.ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Scanner Drive');
+
+    ws.getRow(1).values = headers;
+
+    // Monta as linhas de dados: uma por pendência (ou uma única linha resumo se em dia/erro)
+    const dataRows = [];
+    results.forEach((r) => {
+      const modStr = r.modifiedTime ? new Date(r.modifiedTime).toLocaleString("pt-BR") : "—";
+      if (r.error) {
+        dataRows.push({ situacao: "ERRO", map: r.mapName, file: r.fileName, mod: modStr, link: r.webViewLink || '', row: null });
+      } else if ((r.pendingCount || 0) === 0) {
+        dataRows.push({ situacao: "EM DIA", map: r.mapName, file: r.fileName, mod: modStr, link: r.webViewLink || '', row: null });
+      } else {
+        r.pendingRows.forEach((row) => {
+          dataRows.push({
+            situacao: r.usedDateFallback ? "PENDENTE (POR DATA)" : "PENDENTE",
+            map: r.mapName, file: r.fileName, mod: modStr, link: r.webViewLink || '', row
+          });
+        });
+      }
+    });
+
+    dataRows.forEach((d, idx) => {
+      ws.getRow(2 + idx).values = [
+        d.map, d.file, d.mod, d.situacao,
+        d.row ? d.row.date : '', d.row ? d.row.location : '', d.row ? d.row.splice : '',
+        d.row ? d.row.name : '', d.row ? d.row.type : '', d.link
+      ];
+    });
+
+    const lastDataRow = 1 + dataRows.length;
+
+    // ----- CORES (mesmo esquema do Controle Geral) -----
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D1117' } };
+    const greenFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+    const greenFont = { color: { argb: 'FF1E7A34' }, bold: true };
+    const redFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+    const redFont = { color: { argb: 'FF9C0006' }, bold: true };
+    const amberFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEB9C' } };
+    const amberFont = { color: { argb: 'FF9C6500' }, bold: true };
+    const grayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E5E5' } };
+    const grayFont = { color: { argb: 'FF666666' } };
+    const thinBorder = { style: 'thin', color: { argb: 'FF999999' } };
+
+    for (let c = 1; c <= totalCols; c++) {
+      const cell = ws.getRow(1).getCell(c);
+      cell.fill = headerFill;
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+    }
+
+    const situacaoCol = 4;
+    for (let r = 2; r <= lastDataRow; r++) {
+      const d = dataRows[r - 2];
+      for (let c = 1; c <= totalCols; c++) {
+        const cell = ws.getRow(r).getCell(c);
+        cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+        cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: false };
+      }
+      const sCell = ws.getRow(r).getCell(situacaoCol);
+      if (d.situacao === "EM DIA") { sCell.fill = greenFill; sCell.font = greenFont; }
+      else if (d.situacao === "ERRO") { sCell.fill = grayFill; sCell.font = grayFont; }
+      else if (d.situacao === "PENDENTE (POR DATA)") { sCell.fill = amberFill; sCell.font = amberFont; }
+      else { sCell.fill = redFill; sCell.font = redFont; }
+    }
+
+    ws.columns = headers.map((h, i) => {
+      if (i === 0 || i === 1) return { width: 26 }; // MAPA / ARQUIVO
+      if (i === 3) return { width: 20 }; // SITUAÇÃO
+      if (i === 9) return { width: 34 }; // LINK
+      return { width: 14 };
+    });
+
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    ws.autoFilter = `A1:${colLetter(totalCols)}1`;
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ScannerDrive_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const totalPending = results.reduce((s, r) => s + (r.pendingCount || 0), 0);
   const mapsWithPending = results.filter((r) => (r.pendingCount || 0) > 0).length;
   const mapsUpToDate = results.filter((r) => r.pendingCount === 0).length;
@@ -2116,6 +2227,9 @@ function DriveScanTab() {
             </Field>
             <button onClick={runScan} disabled={scanning || !token} style={{ background: scanning ? C.textFaint : C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: scanning ? "default" : "pointer", height: 32 }}>
               {scanning ? `Escaneando ${progress.done}/${progress.total}...` : "Escanear Agora"}
+            </button>
+            <button onClick={exportScanXLSX} disabled={!results.length} title="Exporta a varredura atual em .xlsx colorido, igual ao Controle Geral" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: results.length ? C.accent : C.textFaint, border: `1px solid ${results.length ? C.accent : C.border2}`, borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: results.length ? "pointer" : "not-allowed", height: 32 }}>
+              <Download size={13} /> Exportar XLSX
             </button>
           </div>
         }
