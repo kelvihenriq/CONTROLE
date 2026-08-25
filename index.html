@@ -1948,8 +1948,11 @@ function DriveScanTab() {
         const params = new URLSearchParams({
           q,
           pageSize: '100',
-          fields: 'nextPageToken, files(id, name, modifiedTime, webViewLink, size)',
+          fields: 'nextPageToken, files(id, name, modifiedTime, webViewLink, size, driveId)',
           orderBy: 'modifiedTime desc',
+          corpora: 'allDrives',
+          includeItemsFromAllDrives: 'true',
+          supportsAllDrives: 'true',
         });
         if (pageToken) params.set('pageToken', pageToken);
         const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
@@ -1964,7 +1967,7 @@ function DriveScanTab() {
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
         try {
-          const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`);
+          const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`);
           const buf = await resp.arrayBuffer();
           const wb = window.XLSX.read(buf, { type: 'array' });
 
