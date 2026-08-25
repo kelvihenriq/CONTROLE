@@ -1788,7 +1788,24 @@ const STORAGE_KEY_DRIVE_SCAN_LAST = 'CONTROL_PRO_DRIVE_SCAN_LAST_V1';
 
 // Lê uma aba já convertida pelo SheetJS (array de arrays) e devolve as linhas
 // de trabalho que estão DEPOIS do último "END INVOICE" — essas são as pendentes.
-function parseProductionSheetRows(rows) {
+// Converte datas no formato usado nessas planilhas ("MM/DD/YY" ou "MM/DD/YYYY") pra um Date real.
+// Retorna null se não conseguir interpretar (aí a linha simplesmente não entra no filtro por data).
+function parseUSShortDate(str) {
+  const s = String(str || '').trim();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return null;
+  let [, mm, dd, yy] = m;
+  let year = parseInt(yy, 10);
+  if (yy.length === 2) year += 2000;
+  const d = new Date(year, parseInt(mm, 10) - 1, parseInt(dd, 10));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// fallbackStartDate ('YYYY-MM-DD' ou null): usado SÓ quando a aba não tem nenhum "END INVOICE"
+// marcado — nesse caso, em vez de considerar a aba inteira pendente (ou zerada), conta como
+// pendente qualquer linha com data dentro do ciclo de faturamento atual (>= data informada).
+// Quando a aba TEM "END INVOICE", essa data nunca entra em jogo — o marcador sempre manda.
+function parseProductionSheetRows(rows, fallbackStartDate) {
   let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType2 = -1;
 
   for (let i = 0; i < rows.length; i++) {
@@ -1805,7 +1822,7 @@ function parseProductionSheetRows(rows) {
       break;
     }
   }
-  if (headerIdx === -1 || colLocation === -1) return { pending: [], total: 0 };
+  if (headerIdx === -1 || colLocation === -1) return { pending: [], total: 0, usedDateFallback: false };
 
   const dataRows = [];
   let lastInvoiceRelIdx = -1;
@@ -1838,8 +1855,22 @@ function parseProductionSheetRows(rows) {
     });
   }
 
-  const pending = dataRows.slice(lastInvoiceRelIdx + 1).filter((r) => r.date || r.location);
-  return { pending, total: dataRows.length };
+  let pending;
+  let usedDateFallback = false;
+
+  if (lastInvoiceRelIdx === -1 && fallbackStartDate) {
+    // Não achou nenhum "END INVOICE" nessa aba — usa a data de início do ciclo de faturamento
+    const cutoff = new Date(fallbackStartDate + 'T00:00:00');
+    pending = dataRows.filter((r) => {
+      const d = parseUSShortDate(r.date);
+      return d && d >= cutoff && (r.date || r.location);
+    });
+    usedDateFallback = true;
+  } else {
+    pending = dataRows.slice(lastInvoiceRelIdx + 1).filter((r) => r.date || r.location);
+  }
+
+  return { pending, total: dataRows.length, usedDateFallback };
 }
 
 function StatChip({ label, value, color }) {
@@ -1858,8 +1889,8 @@ const tdStyleDriveSm = { padding: "5px 8px", color: C.textDim };
 
 function DriveScanTab() {
   const [config, setConfig] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '' }; }
-    catch (e) { return { clientId: '' }; }
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '' }; }
+    catch (e) { return { clientId: '', cycleStartDate: '' }; }
   });
   const [token, setToken] = useState(null);
   const [days, setDays] = useState(5);
@@ -1947,7 +1978,9 @@ function DriveScanTab() {
     setProgress({ done: 0, total: 0 });
 
     try {
-      let q = `fullText contains 'END INVOICE' and name contains 'PRODUCTION' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`;
+      // Não exige mais "fullText contains END INVOICE" — se exigisse, arquivos que nunca tiveram
+      // nenhum marcador (e por isso dependem do fallback por data) nem apareceriam na varredura.
+      let q = `name contains 'PRODUCTION' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`;
       if (Number(days) > 0) {
         const cutoff = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000).toISOString();
         q += ` and modifiedTime > '${cutoff}'`;
@@ -1984,6 +2017,7 @@ function DriveScanTab() {
 
           let mapPending = [];
           let mapTotal = 0;
+          let mapUsedDateFallback = false;
           // Só a aba principal de produção conta — evita somar rascunhos, cópias
           // e abas de invoices antigos que também moram dentro do mesmo arquivo.
           const isDraftSheetName = (name) => /rascunho|c[oó]pia|draft|invoice\s*\d|hist[oó]rico|antig/i.test(name);
@@ -1991,11 +2025,12 @@ function DriveScanTab() {
 
           if (mainSheetName) {
             const rows = window.XLSX.utils.sheet_to_json(wb.Sheets[mainSheetName], { header: 1, raw: false, defval: '' });
-            const parsed = parseProductionSheetRows(rows);
+            const parsed = parseProductionSheetRows(rows, config.cycleStartDate || null);
             if (parsed.pending.length > 0) {
               mapPending = parsed.pending.map((p) => ({ ...p, sheet: mainSheetName }));
             }
             mapTotal = parsed.total;
+            mapUsedDateFallback = parsed.usedDateFallback;
           }
 
           const mapName = (f.name || '')
@@ -2013,6 +2048,7 @@ function DriveScanTab() {
             pendingCount: mapPending.length,
             pendingRows: mapPending,
             totalRows: mapTotal,
+            usedDateFallback: mapUsedDateFallback,
             error: null,
           });
         } catch (e) {
@@ -2072,6 +2108,9 @@ function DriveScanTab() {
         icon={<Search size={13} color={C.textDim} />}
         right={
           <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
+            <Field label="Ciclo de faturamento desde (fallback sem END INVOICE)">
+              <Input type="date" value={config.cycleStartDate || ''} onChange={(e) => setConfig((c) => ({ ...c, cycleStartDate: e.target.value }))} style={{ width: 168 }} />
+            </Field>
             <Field label="Modificados nos últimos (dias)">
               <Input type="number" min="0" value={days} onChange={(e) => setDays(e.target.value)} style={{ width: 90 }} />
             </Field>
@@ -2127,6 +2166,11 @@ function DriveScanTab() {
                       <td style={tdStyleDrive}>{r.modifiedTime ? new Date(r.modifiedTime).toLocaleString("pt-BR") : "—"}</td>
                       <td style={{ ...tdStyleDrive, fontWeight: 800, color: r.error ? C.textFaint : (r.pendingCount > 0 ? C.red : C.green) }}>
                         {r.error ? `ERRO: ${r.error.slice(0, 60)}` : (r.pendingCount === 0 ? "EM DIA" : `${r.pendingCount} linha(s) pendente(s)`)}
+                        {r.usedDateFallback && r.pendingCount > 0 && (
+                          <span title="Essa planilha não tem nenhum 'END INVOICE' marcado — a contagem usou a data de início do ciclo de faturamento como critério." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
+                            por data
+                          </span>
+                        )}
                       </td>
                       <td style={tdStyleDrive}>
                         {r.pendingCount > 0 && (
