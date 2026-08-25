@@ -2083,10 +2083,7 @@ function DriveScanTab() {
     }
     if (!results.length) { alert('Nenhuma varredura feita ainda — clique em "Escanear Agora" primeiro.'); return; }
 
-    const headers = [
-      "MAPA", "ARQUIVO", "MODIFICADO EM", "SITUAÇÃO",
-      "DATA (LINHA)", "LOCATION", "SPLICE", "TÉCNICO", "TIPO", "LINK"
-    ];
+    const headers = ["MAPA", "MODIFICADO EM", "SITUAÇÃO"];
     const totalCols = headers.length;
     const colLetter = (n) => {
       let s = '';
@@ -2099,30 +2096,19 @@ function DriveScanTab() {
 
     ws.getRow(1).values = headers;
 
-    // Monta as linhas de dados: uma por pendência (ou uma única linha resumo se em dia/erro)
+    // Monta as linhas de dados: uma única linha por mapa (igual à listagem do Scanner)
     const dataRows = [];
     results.forEach((r) => {
       const modStr = r.modifiedTime ? new Date(r.modifiedTime).toLocaleString("pt-BR") : "—";
-      if (r.error) {
-        dataRows.push({ situacao: "ERRO", map: r.mapName, file: r.fileName, mod: modStr, link: r.webViewLink || '', row: null });
-      } else if ((r.pendingCount || 0) === 0) {
-        dataRows.push({ situacao: "EM DIA", map: r.mapName, file: r.fileName, mod: modStr, link: r.webViewLink || '', row: null });
-      } else {
-        r.pendingRows.forEach((row) => {
-          dataRows.push({
-            situacao: r.usedDateFallback ? "PENDENTE (POR DATA)" : "PENDENTE",
-            map: r.mapName, file: r.fileName, mod: modStr, link: r.webViewLink || '', row
-          });
-        });
-      }
+      let situacao;
+      if (r.error) situacao = "ERRO";
+      else if ((r.pendingCount || 0) === 0) situacao = "EM DIA";
+      else situacao = r.usedDateFallback ? "PENDENTE (POR DATA)" : "PENDENTE";
+      dataRows.push({ situacao, map: r.mapName, mod: modStr });
     });
 
     dataRows.forEach((d, idx) => {
-      ws.getRow(2 + idx).values = [
-        d.map, d.file, d.mod, d.situacao,
-        d.row ? d.row.date : '', d.row ? d.row.location : '', d.row ? d.row.splice : '',
-        d.row ? d.row.name : '', d.row ? d.row.type : '', d.link
-      ];
+      ws.getRow(2 + idx).values = [d.map, d.mod, d.situacao];
     });
 
     const lastDataRow = 1 + dataRows.length;
@@ -2147,7 +2133,7 @@ function DriveScanTab() {
       cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     }
 
-    const situacaoCol = 4;
+    const situacaoCol = 3;
     for (let r = 2; r <= lastDataRow; r++) {
       const d = dataRows[r - 2];
       for (let c = 1; c <= totalCols; c++) {
@@ -2163,10 +2149,9 @@ function DriveScanTab() {
     }
 
     ws.columns = headers.map((h, i) => {
-      if (i === 0 || i === 1) return { width: 26 }; // MAPA / ARQUIVO
-      if (i === 3) return { width: 20 }; // SITUAÇÃO
-      if (i === 9) return { width: 34 }; // LINK
-      return { width: 14 };
+      if (i === 0) return { width: 28 }; // MAPA
+      if (i === 1) return { width: 20 }; // MODIFICADO EM
+      return { width: 20 }; // SITUAÇÃO
     });
 
     ws.views = [{ state: 'frozen', ySplit: 1 }];
