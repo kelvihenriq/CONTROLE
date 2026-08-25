@@ -503,6 +503,17 @@ function Field({ label, children }) {
 }
 
 // Formata 'YYYY-MM-DD' -> 'DD/MM' para exibição compacta
+// Deixa rolar tabelas largas (muitas colunas de código) usando a rodinha do mouse/trackpad
+// direto na horizontal — sem isso, com milhares de linhas, a barra de rolagem horizontal
+// só aparece lá embaixo de tudo, praticamente impossível de alcançar arrastando.
+function handleHorizontalWheelScroll(e) {
+  const el = e.currentTarget;
+  if (el.scrollWidth > el.clientWidth) {
+    el.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }
+}
+
 function formatShortDate(dateStr) {
     if (!dateStr) return '';
     const parts = dateStr.split('-');
@@ -2874,6 +2885,14 @@ function ProductionDashboard() {
     return true;
   };
 
+  // Remove um código customizado (só é permitido remover os que foram adicionados pela
+  // equipe — os 11 padrão do sistema não podem ser removidos por aqui). Os valores já
+  // lançados nesse código, dentro de registros de produção antigos, ficam guardados —
+  // só somem de aparecer na tabela/cadastro/exportação, mas nada é apagado do histórico.
+  const removeCustomCodeField = (id) => {
+    setCustomCodeFields(prev => prev.filter(f => f.id !== id));
+  };
+
   // ===== DIA DE ENTREGA POR MAPA, ATRIBUÍDO DIRETO AQUI NA PRODUÇÃO =====
   // Independente do cadastro no Controle Geral: permite marcar o dia de entrega (SEGUNDA/
   // QUARTA/QUINTA/SEXTA) de um mapa direto na aba Produção, pra classificar mesmo mapas que
@@ -4030,7 +4049,7 @@ function ProductionDashboard() {
                 ))}
               </div>
             )}
-            <div style={{ overflowX: "auto" }}>
+            <div style={{ overflowX: "auto" }} onWheel={handleHorizontalWheelScroll}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
                 <thead>
                   {/* TOTAIS DO CÓDIGO NO TOPO */}
@@ -4152,7 +4171,7 @@ function ProductionDashboard() {
             <div style={{ fontSize: 10.5, color: C.textDim, marginBottom: 12 }}>
               💡 Ajuste o preço (<strong style={{ color: C.accent }}>PRICE</strong>) de cada código abaixo — o subtotal é calculado sozinho (TOTAL × PRICE) e fica salvo/sincronizado com a equipe.
             </div>
-            <div style={{ overflowX: "auto" }}>
+            <div style={{ overflowX: "auto" }} onWheel={handleHorizontalWheelScroll}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
                 <thead>
                   <tr style={{ background: "#1F4E79", color: "#fff", textAlign: "center" }}>
@@ -4220,6 +4239,8 @@ function ProductionDashboard() {
               onSave={handleSaveProd}
               codeFields={allCodeFields}
               onAddCode={addCustomCodeField}
+              onRemoveCode={removeCustomCodeField}
+              fixedCodeIds={CODE_FIELDS.map(f => f.id)}
             />
           )}
         </div>
@@ -4493,7 +4514,7 @@ function ProductionDashboard() {
               })}
             </div>
           )}
-          <div style={{ overflowX: "auto" }}>
+          <div style={{ overflowX: "auto" }} onWheel={handleHorizontalWheelScroll}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
               <thead>
                 <tr style={{ color: C.textDim, textAlign: "left", borderBottom: `2px solid ${C.border2}`, textTransform: "uppercase", fontSize: 9.5, letterSpacing: 0.8 }}>
@@ -4828,7 +4849,7 @@ function PasteImportModal({ onClose, onImport }) {
   );
 }
 
-function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, onAddCode }) {
+function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, onAddCode, onRemoveCode, fixedCodeIds = [] }) {
   const [form, setForm] = useState(() => initial || {
     daily: "",
     pendings: "NO HUNG",
@@ -4899,12 +4920,31 @@ function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, o
               </button>
             )}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
-            {codeFields.map(f => (
-              <Field key={f.id} label={f.label}>
-                <Input type="number" placeholder="0" value={form.codes?.[f.id] || ''} onChange={setCode(f.id)} />
-              </Field>
-            ))}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
+            {codeFields.map(f => {
+              const isCustom = !fixedCodeIds.includes(f.id);
+              return (
+                <div key={f.id} style={{ position: "relative" }}>
+                  <Field label={f.label}>
+                    <Input type="number" placeholder="0" value={form.codes?.[f.id] || ''} onChange={setCode(f.id)} style={isCustom ? { paddingRight: 22 } : undefined} />
+                  </Field>
+                  {isCustom && onRemoveCode && (
+                    <button
+                      type="button"
+                      title={`Remover o código "${f.id}" (não afeta produção já lançada com ele)`}
+                      onClick={() => {
+                        if (window.confirm(`Remover o código "${f.id}" da lista? Ele deixa de aparecer pra novos lançamentos, mas produção já salva com ele não é apagada.`)) {
+                          onRemoveCode(f.id);
+                        }
+                      }}
+                      style={{ position: "absolute", top: 20, right: 4, background: "transparent", border: "none", color: C.red, cursor: "pointer", padding: 2, lineHeight: 0 }}
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
