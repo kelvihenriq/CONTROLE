@@ -3858,7 +3858,7 @@ function ProductionDashboard() {
       return;
     }
     const headers = [
-      "SEMANA", "ENTREGA", "MAPA / CÓDIGO", "OTS PENDENTES",
+      "SEMANA", "ENTREGA", "MAPA / CÓDIGO", "SITUAÇÃO (DRIVE)", "MODIFICADO (DRIVE)", "OTS PENDENTES",
       "AS-BUILT STATUS", "AS-BUILT TÉCNICO", "AS-BUILT DATA",
       "INVOICE STATUS", "INVOICE TÉCNICO", "INVOICE DATA",
       "WORKBOOK STATUS", "WORKBOOK TÉCNICO", "WORKBOOK DATA",
@@ -3874,6 +3874,15 @@ function ProductionDashboard() {
     const stageLabel = (st) => st === "ENTREGUE" ? "ENTREGUE" : (st === "OK" || st === "SIM") ? "ATUALIZADO" : (st === "FAZENDO" ? "FAZENDO" : (st === "SEM_ATUALIZACAO_SEMANA" ? "SEM ATUALIZAÇÃO NA SEMANA" : "PENDENTE"));
     const generalLabel = (st) => st === "OK" ? "PRONTO" : (st === "PENDING_REVISION" ? "REVISÃO NECESSÁRIA" : "SEM ATUALIZAÇÃO");
     const weekLabel = (cycleId) => { const w = WEEK_OPTIONS.find(w => w.id === cycleId); return w ? formatWeekLabel(w, weekDateRanges) : (cycleId || ''); };
+    // Mesma leitura da varredura do Drive usada na tela do Controle Geral (coluna SITUAÇÃO/MODIFICADO),
+    // pra exportar exatamente o que aparece no dashboard.
+    const driveStatusLabel = (dr) => {
+      if (!dr) return '—';
+      if (dr.error) return 'Erro na leitura';
+      if ((dr.pendingCount || 0) === 0) return 'EM DIA';
+      return `${dr.pendingCount} linha(s) pendente(s)${dr.usedDateFallback ? ' (POR DATA)' : ''}`;
+    };
+    const driveModifiedLabel = (dr) => (dr && dr.modifiedTime) ? new Date(dr.modifiedTime).toLocaleString('pt-BR') : '—';
 
     const wb = new window.ExcelJS.Workbook();
     const ws = wb.addWorksheet('Controle Geral');
@@ -3883,8 +3892,9 @@ function ProductionDashboard() {
 
     // ----- LINHAS 2+: DADOS -----
     items.forEach((item, idx) => {
+      const dr = getDriveResultForItem(item.map);
       ws.getRow(2 + idx).values = [
-        weekLabel(item.cycle), item.deliveryDay || '', item.map || '', item.otCount || 0,
+        weekLabel(item.cycle), item.deliveryDay || '', item.map || '', driveStatusLabel(dr), driveModifiedLabel(dr), item.otCount || 0,
         stageLabel(item.asbuiltStatus), item.asbuiltTech || '', item.asbuiltDate || '',
         stageLabel(item.invoiceStatus), item.invoiceTech || '', item.invoiceDate || '',
         stageLabel(item.workbookStatus), item.workbookTech || '', item.workbookDate || '',
@@ -3919,20 +3929,29 @@ function ProductionDashboard() {
     }
 
     // Colunas com status (AS-BUILT, INVOICE, WORKBOOK, GERAL) coloridas por cor de andamento
-    const stageStatusCols = [5, 8, 11]; // AS-BUILT / INVOICE / WORKBOOK status (agora deslocadas +1 pela coluna SEMANA)
-    const generalStatusCol = 14;
+    const stageStatusCols = [7, 10, 13]; // AS-BUILT / INVOICE / WORKBOOK status (deslocadas +2 pelas colunas SITUAÇÃO/MODIFICADO do Drive)
+    const generalStatusCol = 16;
+    const driveStatusCol = 4;
 
     for (let r = 2; r <= lastDataRow; r++) {
       const item = items[r - 2];
+      const dr = getDriveResultForItem(item.map);
       for (let c = 1; c <= totalCols; c++) {
         const cell = ws.getRow(r).getCell(c);
         cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
         cell.alignment = { horizontal: c === totalCols ? 'left' : 'center', vertical: 'middle', wrapText: c === totalCols };
       }
       // OTs pendentes em destaque
-      const otCell = ws.getRow(r).getCell(4);
+      const otCell = ws.getRow(r).getCell(6);
       otCell.fill = otFill;
       otCell.font = { bold: true };
+
+      // Colore a coluna SITUAÇÃO (DRIVE) igual ao dashboard: verde em dia, vermelho com pendência, cinza sem dado/erro
+      const driveCell = ws.getRow(r).getCell(driveStatusCol);
+      if (!dr) { driveCell.fill = grayFill; driveCell.font = grayFont; }
+      else if (dr.error) { driveCell.fill = grayFill; driveCell.font = grayFont; }
+      else if ((dr.pendingCount || 0) === 0) { driveCell.fill = greenFill; driveCell.font = greenFont; }
+      else { driveCell.fill = redFill; driveCell.font = redFont; }
 
       // Colore cada coluna de status (AS-BUILT, INVOICE, WORKBOOK) conforme o andamento
       const stageStatuses = [item.asbuiltStatus, item.invoiceStatus, item.workbookStatus];
@@ -3956,8 +3975,10 @@ function ProductionDashboard() {
     // Larguras de coluna
     ws.columns = headers.map((h, i) => {
       if (i === 2) return { width: 22 }; // MAPA / CÓDIGO
+      if (i === 3) return { width: 24 }; // SITUAÇÃO (DRIVE)
+      if (i === 4) return { width: 20 }; // MODIFICADO (DRIVE)
       if (i === totalCols - 1) return { width: 30 }; // OBSERVAÇÕES
-      if (i === 13) return { width: 18 }; // STATUS GERAL
+      if (i === totalCols - 2) return { width: 18 }; // STATUS GERAL
       return { width: 13 };
     });
 
