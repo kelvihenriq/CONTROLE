@@ -1873,6 +1873,30 @@ function parseProductionSheetRows(rows, fallbackStartDate) {
   return { pending, total: dataRows.length, usedDateFallback };
 }
 
+// Normaliza um nome de mapa/código pra comparação: maiúsculo, só letras e números.
+// Usado pra casar o "MAPA / CÓDIGO" do Controle Geral com o "mapName" que o Scanner Drive
+// extrai do nome do arquivo (que raramente bate caractere-a-caractere: espaços, hífens,
+// "PRODUCTION LIST" etc. variam de um lado pro outro).
+function normMapKey(s) {
+  return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+// Acha, dentro dos resultados da última varredura do Drive, o mapa correspondente a um
+// código do Controle Geral. Tenta igualdade exata primeiro; se não achar, tenta conter
+// (em qualquer direção), já que um lado costuma ser mais completo que o outro
+// (ex.: "JS37E" no Controle Geral vs "AL - JS37E - SPLICE ERVIN" no nome do arquivo).
+function findDriveResultForMap(mapCode, driveResults) {
+  const key = normMapKey(mapCode);
+  if (!key || !driveResults || !driveResults.length) return null;
+  let found = driveResults.find((r) => normMapKey(r.mapName) === key);
+  if (found) return found;
+  found = driveResults.find((r) => {
+    const rk = normMapKey(r.mapName);
+    return rk && (rk.includes(key) || key.includes(rk));
+  });
+  return found || null;
+}
+
 function StatChip({ label, value, color }) {
   return (
     <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "8px 14px", display: "flex", flexDirection: "column", gap: 2, minWidth: 120 }}>
@@ -2083,7 +2107,7 @@ function DriveScanTab() {
     }
     if (!results.length) { alert('Nenhuma varredura feita ainda — clique em "Escanear Agora" primeiro.'); return; }
 
-    const headers = ["MAPA", "MODIFICADO EM", "SITUAÇÃO"];
+    const headers = ["MAPA", "ARQUIVO", "MODIFICADO EM", "SITUAÇÃO", "LINK"];
     const totalCols = headers.length;
     const colLetter = (n) => {
       let s = '';
@@ -2096,19 +2120,18 @@ function DriveScanTab() {
 
     ws.getRow(1).values = headers;
 
-    // Monta as linhas de dados: uma única linha por mapa (igual à listagem do Scanner)
-    const dataRows = [];
-    results.forEach((r) => {
+    // Uma linha por mapa (igual à tabela da tela) — sem detalhar as linhas pendentes individuais
+    const dataRows = results.map((r) => {
       const modStr = r.modifiedTime ? new Date(r.modifiedTime).toLocaleString("pt-BR") : "—";
       let situacao;
-      if (r.error) situacao = "ERRO";
+      if (r.error) situacao = `ERRO: ${r.error}`;
       else if ((r.pendingCount || 0) === 0) situacao = "EM DIA";
-      else situacao = r.usedDateFallback ? "PENDENTE (POR DATA)" : "PENDENTE";
-      dataRows.push({ situacao, map: r.mapName, mod: modStr });
+      else situacao = `${r.pendingCount} linha(s) pendente(s)${r.usedDateFallback ? ' (por data)' : ''}`;
+      return { map: r.mapName, file: r.fileName, mod: modStr, situacao, link: r.webViewLink || '', pendingCount: r.pendingCount, error: r.error, usedDateFallback: r.usedDateFallback };
     });
 
     dataRows.forEach((d, idx) => {
-      ws.getRow(2 + idx).values = [d.map, d.mod, d.situacao];
+      ws.getRow(2 + idx).values = [d.map, d.file, d.mod, d.situacao, d.link];
     });
 
     const lastDataRow = 1 + dataRows.length;
@@ -2133,7 +2156,7 @@ function DriveScanTab() {
       cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     }
 
-    const situacaoCol = 3;
+    const situacaoCol = 4;
     for (let r = 2; r <= lastDataRow; r++) {
       const d = dataRows[r - 2];
       for (let c = 1; c <= totalCols; c++) {
@@ -2149,9 +2172,10 @@ function DriveScanTab() {
     }
 
     ws.columns = headers.map((h, i) => {
-      if (i === 0) return { width: 28 }; // MAPA
-      if (i === 1) return { width: 20 }; // MODIFICADO EM
-      return { width: 20 }; // SITUAÇÃO
+      if (i === 0 || i === 1) return { width: 26 }; // MAPA / ARQUIVO
+      if (i === 3) return { width: 20 }; // SITUAÇÃO
+      if (i === 9) return { width: 34 }; // LINK
+      return { width: 14 };
     });
 
     ws.views = [{ state: 'frozen', ySplit: 1 }];
@@ -2684,6 +2708,41 @@ function ProductionDashboard() {
   // ===== ABA (DASHBOARD DE CONTROLE x PRODUÇÃO & CÓDIGOS AS-BUILT) =====
   const [activeTab, setActiveTab] = useState("DASHBOARD");
 
+  // ===== SITUAÇÃO DO DRIVE NO CONTROLE GERAL =====
+  // Lê o resultado da última varredura feita na aba "SCANNER DRIVE" (fica salvo no navegador,
+  // mesma chave usada lá) pra mostrar SITUAÇÃO e MODIFICADO ao lado de cada mapa aqui no
+  // Controle Geral, e permitir filtrar só os mapas que têm pendência no Drive. Não faz a
+  // varredura sozinho (isso continua exigindo conectar ao Google Drive na aba própria) —
+  // mas sempre que você volta pra esta aba, recarrega o resultado mais recente salvo.
+  const [driveScanResults, setDriveScanResults] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_RESULTS) || 'null') || []; }
+    catch (e) { return []; }
+  });
+  const [driveScanLast, setDriveScanLast] = useState(() => localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '');
+  const [onlyDrivePending, setOnlyDrivePending] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== "DASHBOARD") return;
+    try { setDriveScanResults(JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_RESULTS) || 'null') || []); } catch (e) {}
+    setDriveScanLast(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '');
+  }, [activeTab]);
+
+  const driveResultByMap = useMemo(() => {
+    const map = new Map();
+    driveScanResults.forEach((r) => {
+      const key = normMapKey(r.mapName);
+      if (key && !map.has(key)) map.set(key, r);
+    });
+    return map;
+  }, [driveScanResults]);
+
+  const getDriveResultForItem = (mapCode) => {
+    const key = normMapKey(mapCode);
+    if (!key) return null;
+    if (driveResultByMap.has(key)) return driveResultByMap.get(key);
+    return findDriveResultForMap(mapCode, driveScanResults);
+  };
+
   const [productionList, setProductionList] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY_PRODUCTION);
     if (saved) {
@@ -2798,6 +2857,17 @@ function ProductionDashboard() {
     if (selectedDeliveryDay === "ALL") return filteredAndSorted;
     return filteredAndSorted.filter((p) => (p.deliveryDay || "").trim().toUpperCase() === selectedDeliveryDay);
   }, [filteredAndSorted, selectedDeliveryDay]);
+
+  // Mesma lista acima, mas só usada pra RENDERIZAR a tabela — quando "Só com pendência no
+  // Drive" está marcado, esconde os mapas que a varredura do Drive não achou (ou achou "em
+  // dia"), sem afetar os cálculos de progresso/KPIs que usam generalTableItems inteiro.
+  const generalTableItemsDisplayed = useMemo(() => {
+    if (!onlyDrivePending) return generalTableItems;
+    return generalTableItems.filter((item) => {
+      const dr = getDriveResultForItem(item.map);
+      return dr && !dr.error && (dr.pendingCount || 0) > 0;
+    });
+  }, [generalTableItems, onlyDrivePending, driveScanResults]);
 
   // Progressão separada por etapa (AS-BUILT / INVOICE / WORKBOOK) dentro do dia de entrega
   // selecionado — permite ver, por exemplo, que o AS-BUILT de quinta-feira já está quase
@@ -4615,6 +4685,27 @@ function ProductionDashboard() {
               <button onClick={exportGeneralXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
                 <Download size={12} /> Exportar XLSX
               </button>
+              <button
+                onClick={() => {
+                  try { setDriveScanResults(JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_RESULTS) || 'null') || []); } catch (e) {}
+                  setDriveScanLast(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '');
+                }}
+                title="Recarrega a situação do Drive a partir da última varredura salva (feita na aba Scanner Drive)"
+                style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+              >
+                <RotateCcw size={12} /> Atualizar Drive
+              </button>
+              <button
+                onClick={() => setActiveTab("DRIVE_SCAN")}
+                title="Ir para a aba Scanner Drive pra rodar uma nova varredura"
+                style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+              >
+                Escanear Drive
+              </button>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: C.textDim, cursor: "pointer", userSelect: "none" }} title="Mostra só os mapas que a última varredura do Drive encontrou com linhas pendentes">
+                <input type="checkbox" checked={onlyDrivePending} onChange={(e) => setOnlyDrivePending(e.target.checked)} style={{ cursor: "pointer" }} />
+                Só com pendência no Drive
+              </label>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 10px" }}>
                 <Search size={12} color={C.textFaint} />
                 <input placeholder="Buscar por mapa, técnico..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 180 }} />
@@ -4666,6 +4757,8 @@ function ProductionDashboard() {
                   </th>
                   <th style={{ padding: "8px 6px" }}>ENTREGA</th>
                   <th style={{ padding: "8px 6px" }}>MAPA / CÓDIGO</th>
+                  <th style={{ padding: "8px 6px" }}>SITUAÇÃO (DRIVE)</th>
+                  <th style={{ padding: "8px 6px" }}>MODIFICADO (DRIVE)</th>
                   <th style={{ padding: "8px 6px" }}>OTS PENDENTES</th>
                   <th style={{ padding: "8px 6px" }}>CICLO (SÁB-SEX)</th>
                   <th style={{ padding: "8px 6px" }}>AS-BUILT</th>
@@ -4677,7 +4770,9 @@ function ProductionDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {generalTableItems.length > 0 ? generalTableItems.map((item) => (
+                {generalTableItemsDisplayed.length > 0 ? generalTableItemsDisplayed.map((item) => {
+                  const dr = getDriveResultForItem(item.map);
+                  return (
                   <tr key={item.id} style={{ borderBottom: `1px solid ${C.borderSoft}`, background: selectedGeneralIds.has(item.id) ? "rgba(179,136,255,0.06)" : "transparent" }}>
                     <td style={{ padding: "8px 6px" }}>
                       <input type="checkbox" checked={selectedGeneralIds.has(item.id)} onChange={() => toggleGeneralSelect(item.id)} style={{ cursor: "pointer" }} />
@@ -4686,6 +4781,25 @@ function ProductionDashboard() {
                       <span style={{ color: item.deliveryDay === "QUINTA" ? C.accent : C.purple, fontWeight: 700, fontSize: 10 }}>{item.deliveryDay}</span>
                     </td>
                     <td style={{ padding: "8px 6px", fontWeight: 700, color: C.text }}>{item.map}</td>
+                    <td style={{ padding: "8px 6px" }}>
+                      {!dr ? (
+                        <span style={{ color: C.textFaint, fontSize: 10 }}>—</span>
+                      ) : dr.error ? (
+                        <span style={{ color: C.textFaint, fontSize: 10 }}>Erro na leitura</span>
+                      ) : (dr.pendingCount || 0) === 0 ? (
+                        <span style={{ color: C.green, fontWeight: 700, fontSize: 10 }}>EM DIA</span>
+                      ) : (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                          <span style={{ color: C.red, fontWeight: 800, fontSize: 10 }}>{dr.pendingCount} linha(s) pendente(s)</span>
+                          {dr.usedDateFallback && (
+                            <span style={{ fontSize: 8.5, fontWeight: 800, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 4px" }}>POR DATA</span>
+                          )}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 6px", fontSize: 10, color: C.textDim }}>
+                      {dr && dr.modifiedTime ? new Date(dr.modifiedTime).toLocaleString("pt-BR") : "—"}
+                    </td>
                     <td style={{ padding: "8px 6px" }}>
                       {item.otCount > 0 ? (
                         <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontWeight: 800, fontSize: 10 }}>{item.otCount} OT(s)</span>
@@ -4719,9 +4833,10 @@ function ProductionDashboard() {
                       </div>
                     </td>
                   </tr>
-                )) : (
+                  );
+                }) : (
                   <tr>
-                    <td colSpan="11" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>Nenhum item encontrado{selectedDeliveryDay !== "ALL" ? ` para a entrega de ${selectedDeliveryDay}` : ""}.</td>
+                    <td colSpan="13" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>Nenhum item encontrado{selectedDeliveryDay !== "ALL" ? ` para a entrega de ${selectedDeliveryDay}` : ""}.</td>
                   </tr>
                 )}
               </tbody>
