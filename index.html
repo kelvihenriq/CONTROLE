@@ -1913,10 +1913,12 @@ const tdStyleDriveSm = { padding: "5px 8px", color: C.textDim };
 
 function DriveScanTab() {
   const [config, setConfig] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '' }; }
-    catch (e) { return { clientId: '', cycleStartDate: '' }; }
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', sharedDriveId: '' }; }
+    catch (e) { return { clientId: '', cycleStartDate: '', sharedDriveId: '' }; }
   });
   const [token, setToken] = useState(null);
+  const [sharedDrives, setSharedDrives] = useState([]);
+  const [loadingDrives, setLoadingDrives] = useState(false);
   const [days, setDays] = useState(5);
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -1965,8 +1967,10 @@ function DriveScanTab() {
         scope: 'https://www.googleapis.com/auth/drive.readonly',
         callback: (resp) => {
           if (resp && resp.access_token) {
-            setToken({ access_token: resp.access_token, obtained: Date.now() });
+            const tk = { access_token: resp.access_token, obtained: Date.now() };
+            setToken(tk);
             setError('');
+            loadSharedDrives(tk);
           } else {
             setError('Não foi possível autenticar com o Google.');
           }
@@ -1975,6 +1979,37 @@ function DriveScanTab() {
       tokenClientRef.current.__clientId = config.clientId;
     }
     tokenClientRef.current.requestAccessToken();
+  };
+
+  // Busca a lista de Drives Compartilhados que o usuário enxerga, pra ele escolher em qual
+  // rodar a varredura (em vez de vasculhar todos os drives da organização de uma vez).
+  const loadSharedDrives = async (tk) => {
+    setLoadingDrives(true);
+    try {
+      let drives = [];
+      let pageToken = '';
+      do {
+        const params = new URLSearchParams({ pageSize: '100', fields: 'nextPageToken, drives(id, name)' });
+        if (pageToken) params.set('pageToken', pageToken);
+        const resp = await fetch(`https://www.googleapis.com/drive/v3/drives?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${tk.access_token}` },
+        });
+        if (!resp.ok) break;
+        const data = await resp.json();
+        drives = drives.concat(data.drives || []);
+        pageToken = data.nextPageToken || '';
+      } while (pageToken);
+      setSharedDrives(drives);
+      // Se ainda não tiver um drive escolhido, tenta achar automaticamente o "Stevens" pra já vir selecionado.
+      if (!config.sharedDriveId) {
+        const stevens = drives.find((d) => /stevens/i.test(d.name || ''));
+        if (stevens) setConfig((c) => ({ ...c, sharedDriveId: stevens.id }));
+      }
+    } catch (e) {
+      // silencioso — usuário ainda pode colar o ID do drive manualmente
+    } finally {
+      setLoadingDrives(false);
+    }
   };
 
   const disconnect = () => {
@@ -2018,10 +2053,17 @@ function DriveScanTab() {
           pageSize: '100',
           fields: 'nextPageToken, files(id, name, modifiedTime, webViewLink, size, driveId)',
           orderBy: 'modifiedTime desc',
-          corpora: 'allDrives',
           includeItemsFromAllDrives: 'true',
           supportsAllDrives: 'true',
         });
+        // Se um Drive Compartilhado específico foi selecionado (ex: "Stevens communications shared"),
+        // restringe a varredura só a ele. Caso contrário, cai no comportamento antigo (todos os drives).
+        if (config.sharedDriveId) {
+          params.set('corpora', 'drive');
+          params.set('driveId', config.sharedDriveId);
+        } else {
+          params.set('corpora', 'allDrives');
+        }
         if (pageToken) params.set('pageToken', pageToken);
         const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
         const data = await resp.json();
@@ -2221,6 +2263,42 @@ function DriveScanTab() {
             {token ? "● Conectado" : "○ Não conectado"}
           </div>
         </div>
+        {token && (
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr auto", gap: 10, alignItems: "end", marginTop: 12 }}>
+            <Field label="Drive Compartilhado a varrer (deixe vazio para varrer todos)">
+              <select
+                value={config.sharedDriveId || ''}
+                onChange={(e) => setConfig((c) => ({ ...c, sharedDriveId: e.target.value }))}
+                style={{ background: C.bg2 || '#131920', color: C.textDim || '#c8d8e8', border: `1px solid ${C.border2 || '#263040'}`, borderRadius: 5, padding: '8px 10px', fontSize: 11, fontFamily: "'JetBrains Mono', monospace", width: '100%' }}
+              >
+                <option value="">— Todos os Drives Compartilhados —</option>
+                {sharedDrives.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Ou cole o ID do Drive manualmente">
+              <Input
+                placeholder="ID do Drive Compartilhado"
+                value={config.sharedDriveId || ''}
+                onChange={(e) => setConfig((c) => ({ ...c, sharedDriveId: e.target.value.trim() }))}
+              />
+            </Field>
+            <button
+              onClick={() => loadSharedDrives(token)}
+              disabled={loadingDrives}
+              title="Recarrega a lista de Drives Compartilhados"
+              style={{ background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: loadingDrives ? "default" : "pointer", height: 32 }}
+            >
+              {loadingDrives ? "..." : "Recarregar lista"}
+            </button>
+          </div>
+        )}
+        {token && config.sharedDriveId && (
+          <div style={{ fontSize: 10, color: C.green, marginTop: 8 }}>
+            ✓ Varredura restrita a: <strong>{(sharedDrives.find((d) => d.id === config.sharedDriveId) || {}).name || config.sharedDriveId}</strong> — os demais drives da organização ficam de fora.
+          </div>
+        )}
       </Panel>
 
       <Panel
