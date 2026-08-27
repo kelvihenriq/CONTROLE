@@ -2216,7 +2216,7 @@ function parseProductionSheetRows(rows, fallbackStartDate) {
     });
     usedDateFallback = true;
   } else {
-    pending = dataRows.slice(lastInvoiceRelIdx + 1).filter((r) => r.date || r.location);
+    pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.date || r.location);
   }
 
   return { pending, total: dataRows.length, usedDateFallback };
