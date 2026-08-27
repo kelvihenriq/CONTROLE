@@ -62,6 +62,8 @@ function translate(lang, s) {
 }
 const EN_DICT = {
   'Gestão Interna (Salvamento Automático No Navegador)': 'Internal Management (Auto-Save In Browser)',
+  'ARQUIVO': 'FILE',
+  'Abrir': 'Open',
   'DASHBOARD DE CONTROLE': 'CONTROL DASHBOARD',
   'ABA PRODUÇÃO & CÓDIGOS AS-BUILT': 'PRODUCTION & AS-BUILT CODES',
   'AUTOMAÇÃO (MAPA)': 'AUTOMATION (MAP)',
@@ -5250,6 +5252,7 @@ function ProductionDashboard() {
                   </th>
                   <th style={{ padding: "8px 6px" }}>{t('ENTREGA')}</th>
                   <th style={{ padding: "8px 6px" }}>{t('MAPA / CÓDIGO')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('ARQUIVO')}</th>
                   <th style={{ padding: "8px 6px" }}>{t('SITUAÇÃO (DRIVE)')}</th>
                   <th style={{ padding: "8px 6px" }}>{t('MODIFICADO (DRIVE)')}</th>
                   <th style={{ padding: "8px 6px" }}>{t('OTS PENDENTES')}</th>
@@ -5274,6 +5277,15 @@ function ProductionDashboard() {
                       <span style={{ color: item.deliveryDay === "QUINTA" ? C.accent : C.purple, fontWeight: 700, fontSize: 10 }}>{item.deliveryDay}</span>
                     </td>
                     <td style={{ padding: "8px 6px", fontWeight: 700, color: C.text }}>{item.map}</td>
+                    <td style={{ padding: "8px 6px", fontSize: 10 }}>
+                      {dr && dr.webViewLink ? (
+                        <a href={dr.webViewLink} target="_blank" rel="noreferrer" style={{ color: C.accent, textDecoration: "underline" }}>
+                          {dr.fileName || t('Abrir')}
+                        </a>
+                      ) : (
+                        <span style={{ color: C.textFaint }}>—</span>
+                      )}
+                    </td>
                     <td style={{ padding: "8px 6px" }}>
                       {!dr ? (
                         <span style={{ color: C.textFaint, fontSize: 10 }}>—</span>
@@ -5329,7 +5341,7 @@ function ProductionDashboard() {
                   );
                 }) : (
                   <tr>
-                    <td colSpan="13" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>{t('Nenhum item encontrado')}{selectedDeliveryDay !== "ALL" ? ` ${t('para a entrega de')} ${selectedDeliveryDay}` : ""}.</td>
+                    <td colSpan="14" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>{t('Nenhum item encontrado')}{selectedDeliveryDay !== "ALL" ? ` ${t('para a entrega de')} ${selectedDeliveryDay}` : ""}.</td>
                   </tr>
                 )}
               </tbody>
