@@ -45,7 +45,344 @@
 <div id="root"></div>
 
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useMemo } = React;
+const { useState, useEffect, useMemo, useContext } = React;
+
+// ===== IDIOMA (PT/EN) =====
+// Contexto global de idioma. Qualquer componente dentro do <LangContext.Provider> (que envolve
+// todo o app, lá no ProductionDashboard) pode chamar useLang() pra pegar { lang, t }.
+// t("texto em português") devolve a tradução em inglês quando lang === 'en' (cadastrada em
+// EN_DICT logo abaixo), ou o próprio texto em português se ainda não tiver tradução — assim
+// nada quebra mesmo pra textos que ainda não foram adicionados ao dicionário.
+const STORAGE_KEY_LANG = 'CONTROL_PRO_LANG_V1';
+const LangContext = React.createContext({ lang: 'pt', t: (s) => s });
+function useLang() { return useContext(LangContext); }
+function translate(lang, s) {
+  if (lang !== 'en' || s == null) return s;
+  return Object.prototype.hasOwnProperty.call(EN_DICT, s) ? EN_DICT[s] : s;
+}
+const EN_DICT = {
+  'Gestão Interna (Salvamento Automático No Navegador)': 'Internal Management (Auto-Save In Browser)',
+  'DASHBOARD DE CONTROLE': 'CONTROL DASHBOARD',
+  'ABA PRODUÇÃO & CÓDIGOS AS-BUILT': 'PRODUCTION & AS-BUILT CODES',
+  'AUTOMAÇÃO (MAPA)': 'AUTOMATION (MAP)',
+  'CALCULADORA DE FIBRA': 'FIBER CALCULATOR',
+  'PENDINGS (MAPA)': 'PENDINGS (MAP)',
+  'REDLINES': 'REDLINES',
+  'SCANNER DRIVE': 'DRIVE SCANNER',
+  'Ciclo:': 'Cycle:',
+  '(Aberta)': '(Open)',
+  '(Fechada)': '(Closed)',
+  'Todos os Ciclos': 'All Cycles',
+  'Semana Aberta (Ativa):': 'Open Week (Active):',
+  'Datas das Semanas': 'Week Dates',
+  'Novo Mês (Resetar Semanas)': 'New Month (Reset Weeks)',
+  'Histórico': 'History',
+  'Novo Item': 'New Item',
+  'Entrega:': 'Delivery:',
+  'TODOS': 'ALL',
+  'SEM ENTREGA': 'NO DELIVERY',
+  'Total OTs Pendentes no Ciclo': 'Total Pending WOs in Cycle',
+  'OTs a Fazer': 'WOs To Do',
+  'Prioridade Máxima': 'Top Priority',
+  'Nenhuma': 'None',
+  'Status As-Built': 'As-Built Status',
+  'Prontos no Ciclo': 'Ready in Cycle',
+  'Pendentes / Revisão': 'Pending / Review',
+  'Validação Invoices': 'Invoice Validation',
+  'Invoices Atualizadas': 'Invoices Updated',
+  'Invoices Pendentes': 'Invoices Pending',
+  'Validação Workbooks': 'Workbook Validation',
+  'Workbooks Atualizados': 'Workbooks Updated',
+  'Workbooks Pendentes': 'Workbooks Pending',
+  'PROGRESSO POR DIA DE ENTREGA': 'PROGRESS BY DELIVERY DAY',
+  'AS-BUILT': 'AS-BUILT',
+  'INVOICE': 'INVOICE',
+  'WORKBOOK': 'WORKBOOK',
+  'mapas do dia atualizados': 'maps for the day updated',
+  'Pra atualizar um mapa, use a tabela "Controle Geral" logo abaixo — clique no lápis ✎ na coluna Ações pra abrir o cadastro completo (AS-BUILT, Invoice e Workbook).':
+    'To update a map, use the "General Control" table below — click the pencil ✎ in the Actions column to open the full record (As-Built, Invoice and Workbook).',
+  'CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO': 'GENERAL PRODUCTION & DOCUMENTATION CONTROL',
+  'Copiar': 'Copy',
+  'Todos': 'All',
+  'p/ Próxima Semana': 'to Next Week',
+  'Exportar XLSX': 'Export XLSX',
+  'Atualizar Drive': 'Refresh Drive',
+  'Atualizado!': 'Updated!',
+  'Última varredura: ': 'Last scan: ',
+  'Nenhuma varredura salva ainda — rode uma na aba Scanner Drive.': 'No scan saved yet — run one in the Drive Scanner tab.',
+  'Escanear Drive': 'Scan Drive',
+  'Só com pendência no Drive': 'Only Drive pending',
+  'Buscar por mapa, técnico...': 'Search by map, technician...',
+  'ENTREGA': 'DELIVERY',
+  'MAPA / CÓDIGO': 'MAP / CODE',
+  'SITUAÇÃO (DRIVE)': 'STATUS (DRIVE)',
+  'MODIFICADO (DRIVE)': 'MODIFIED (DRIVE)',
+  'OTS PENDENTES': 'PENDING WOS',
+  'CICLO (SÁB-SEX)': 'CYCLE (SAT-FRI)',
+  'STATUS GERAL': 'OVERALL STATUS',
+  'OBSERVAÇÕES': 'NOTES',
+  'AÇÕES': 'ACTIONS',
+  'Erro na leitura': 'Read error',
+  'EM DIA': 'ON TRACK',
+  'linha(s) pendente(s)': 'pending row(s)',
+  'POR DATA': 'BY DATE',
+  '(Zerado)': '(Zeroed)',
+  'OT(s)': 'WO(s)',
+  'Nenhum item encontrado': 'No items found',
+  'para a entrega de': 'for the delivery of',
+  'ENTREGUE': 'DELIVERED',
+  'ATUALIZADO': 'UPDATED',
+  'FAZENDO': 'IN PROGRESS',
+  'SEM ATUALIZAÇÃO NA SEMANA': 'NO UPDATE THIS WEEK',
+  'PENDENTE': 'PENDING',
+  'Por: ': 'By: ',
+  'Em: ': 'On: ',
+  'PRONTO': 'READY',
+  'REVISÃO NECESSÁRIA': 'REVISION NEEDED',
+  'SEM ATUALIZAÇÃO': 'NOT UPDATED',
+  'Mapa:': 'Map:',
+  '— selecione —': '— select —',
+  'Novo Mapa': 'New Map',
+  'Exportar Pendings (.XLSX)': 'Export Pendings (.XLSX)',
+  'Apagar Mapa': 'Delete Map',
+  'Selecione um mapa acima ou crie um novo pra começar a marcar os pendings.': 'Select a map above or create a new one to start marking pendings.',
+  'Clique pra renomear': 'Click to rename',
+  'DONE': 'DONE',
+  'Descreva o problema...': 'Describe the issue...',
+  'Item': 'Item',
+  'Gera vários itens de uma vez, só perguntando a quantidade': 'Generates several items at once, just asking the quantity',
+  'Quantidade': 'Quantity',
+  'Novo Grupo': 'New Group',
+  'Adicionar Location': 'Add Location',
+  'Mês:': 'Month:',
+  'Novo Mês': 'New Month',
+  'Exportar Redlines (.XLSX)': 'Export Redlines (.XLSX)',
+  'Apagar Mês': 'Delete Month',
+  'Crie um mês acima (ex: AGOSTO) pra começar a preencher o Redlines.': 'Create a month above (e.g. AUGUST) to start filling in Redlines.',
+  'Clique no quadradinho de cor à esquerda de cada linha pra alternar: sem cor →': 'Click the color box to the left of each row to cycle: no color →',
+  'verde (feito)': 'green (done)',
+  'amarelo (aguardando/atenção)': 'yellow (waiting/attention)',
+  'vermelho (problema)': 'red (issue)',
+  'As cores saem iguais na planilha exportada.': 'The colors come out the same in the exported spreadsheet.',
+  'Clique pra mudar a cor da linha': 'Click to change the row color',
+  'Nova Linha': 'New Row',
+  'Pendências do Mês': 'Month Pendings',
+  'Anota aqui pendências gerais (não de uma linha específica), tipo "GR06E — falta fotos" ou "RU80E — falta PDF". Sai listado junto na exportação.':
+    'Note general pendings here (not tied to a specific row), like "GR06E — missing photos" or "RU80E — missing PDF". It gets listed together in the export.',
+  'Ex: GR06E — falta fotos do splice': 'E.g.: GR06E — missing splice photos',
+  'Adicionar Pendência': 'Add Pending',
+  'Clique duplo para renomear': 'Double-click to rename',
+  'Novo Cálculo': 'New Calculation',
+  'Cálculo dedicado onde cada unidade equivale a 12 fibras (ribbon)': 'Dedicated calculation where each unit equals 12 fibers (ribbon)',
+  'Novo Cálculo Ribbon (×12)': 'New Ribbon Calculation (×12)',
+  'Calculadora de Fibra — Riscando (Ribbon ×12)': 'Fiber Calculator — Marking (Ribbon ×12)',
+  'Calculadora de Fibra — Riscando': 'Fiber Calculator — Marking',
+  '1 unidade = 1 fibra': '1 unit = 1 fiber',
+  'Normal': 'Normal',
+  '1 unidade = 12 fibras (ribbon)': '1 unit = 12 fibers (ribbon)',
+  'Ribbon ×12': 'Ribbon ×12',
+  'Código:': 'Code:',
+  'Limpar linhas': 'Clear rows',
+  'Limpar': 'Clear',
+  'Modo Ribbon ativo: cada unidade contada na linha vale': 'Ribbon mode active: each unit counted on the row is worth',
+  '12 fibras': '12 fibers',
+  'Ex: faixa #1-4 (4 ribbons) = 48 fibras.': 'E.g.: range #1-4 (4 ribbons) = 48 fibers.',
+  'Linha': 'Row',
+  'Ribbons': 'Ribbons',
+  'Fibras': 'Fibers',
+  'Ex: SE010 IN#1 TO FT031#1': 'E.g.: SE010 IN#1 TO FT031#1',
+  'Calculado automaticamente a partir da faixa # na linha': 'Automatically calculated from the # range on the row',
+  'Valor manual (clique no ↺ para voltar ao automático)': 'Manual value (click ↺ to go back to automatic)',
+  'Voltar ao cálculo automático': 'Go back to automatic calculation',
+  'Total': 'Total',
+  'Adicionar Linha': 'Add Row',
+  'Riscando:': 'Marking:',
+  'Copiado!': 'Copied!',
+  'Copiar Código': 'Copy Code',
+  'Conexão com o Google Drive': 'Google Drive Connection',
+  'Escaneia automaticamente todas as planilhas "PRODUCTION LIST" do Drive e mostra quais mapas têm linhas de trabalho abaixo do último "END INVOICE" — ou seja, trabalho já feito mas ainda não fechado. A leitura acontece direto no seu navegador; nada passa por servidor além do Google.':
+    'Automatically scans all "PRODUCTION LIST" spreadsheets in Drive and shows which maps have work rows below the last "END INVOICE" — i.e. work already done but not yet closed/invoiced. Reading happens right in your browser; nothing goes through any server besides Google.',
+  'Client ID OAuth (Google Cloud Console)': 'OAuth Client ID (Google Cloud Console)',
+  'Conectar ao Drive': 'Connect to Drive',
+  'Carregando...': 'Loading...',
+  'Desconectar': 'Disconnect',
+  'Conectado': 'Connected',
+  'Não conectado': 'Not connected',
+  'Drive Compartilhado a varrer (deixe vazio para varrer todos)': 'Shared Drive to scan (leave empty to scan all)',
+  '— Todos os Drives Compartilhados —': '— All Shared Drives —',
+  'Ou cole o ID do Drive manualmente': 'Or paste the Drive ID manually',
+  'ID do Drive Compartilhado': 'Shared Drive ID',
+  'Recarregar lista': 'Reload list',
+  'Varredura restrita a:': 'Scan restricted to:',
+  'os demais drives da organização ficam de fora.': 'the other drives in the organization are left out.',
+  'Varredura de Mapas Pendentes': 'Pending Maps Scan',
+  'Ciclo de faturamento desde (fallback sem END INVOICE)': 'Billing cycle since (fallback without END INVOICE)',
+  'Modificados nos últimos (dias)': 'Modified in the last (days)',
+  'Escaneando': 'Scanning',
+  'Escanear Agora': 'Scan Now',
+  'Mapas com pendência': 'Maps with pending items',
+  'Linhas pendentes (total)': 'Pending rows (total)',
+  'Mapas em dia': 'Maps on track',
+  'Falharam ao abrir': 'Failed to open',
+  'Nenhuma varredura feita ainda. Conecte ao Drive acima e clique em "Escanear Agora".': 'No scan run yet. Connect to Drive above and click "Scan Now".',
+  'Mapa': 'Map',
+  'Arquivo': 'File',
+  'Modificado': 'Modified',
+  'Situação': 'Status',
+  'ERRO:': 'ERROR:',
+  'por data': 'by date',
+  'Ocultar': 'Hide',
+  'Ver linhas': 'View rows',
+  'Data': 'Date',
+  'Location': 'Location',
+  'Splice': 'Splice',
+  'Técnico': 'Technician',
+  'Tipo': 'Type',
+  'Como configurar o acesso ao Google Drive (uma vez só)': 'How to set up Google Drive access (one-time)',
+  'Sobe o': 'Upload the',
+  'e o': 'and the',
+  'PDF do As-Built': 'As-Built PDF',
+  'a lista de': 'the',
+  'Produção': 'Production',
+  'mapa': 'map',
+  'já vem direto da aba Produção deste painel (botão "Usar Produção do Painel" dentro da ferramenta), sem precisar exportar/subir planilha à parte.':
+    'list already comes straight from this dashboard\'s Production tab (the "Use Panel Production" button inside the tool), no need to export/upload a separate spreadsheet.',
+  'Ela acha a posição certa de cada tag sozinha e grava as caixinhas como anotações reais (editáveis) no PDF, já com conciliação em Excel.':
+    'It finds the right position for each tag on its own and saves the boxes as real (editable) annotations on the PDF, already reconciled in Excel.',
+  'Carregando ferramenta de automação...': 'Loading automation tool...',
+  'LISTA DE PRODUÇÃO COM FORMATO AUTOMÁTICO DE AS-BUILT': 'PRODUCTION LIST WITH AUTOMATIC AS-BUILT FORMAT',
+  '— TODOS OS MAPAS': '— ALL MAPS',
+  '— MAPA': '— MAP',
+  'DE': 'FROM',
+  'ATÉ': 'TO',
+  'Selecionar Período': 'Select Period',
+  'Limpar Seleção': 'Clear Selection',
+  'Todos': 'All',
+  'Pendentes': 'Pending',
+  'Feitos': 'Done',
+  'Buscar na produção...': 'Search production...',
+  '💡 Clique em "Copiar" na coluna ASBUILT (GERADO) e depois vá na aba Automação, clique em "Adicionar Caixa Manual", clique no ponto do mapa e cole (Ctrl+V) — sem precisar de IA nem chave de API.':
+    '💡 Click "Copy" in the ASBUILT (GENERATED) column, then go to the Automation tab, click "Add Manual Box", click the spot on the map and paste (Ctrl+V) — no AI or API key needed.',
+  'linha(s) marcada(s) — o Invoice/Totais abaixo estão somando só essas linhas.': 'row(s) selected — the Invoice/Totals below are adding up only these rows.',
+  'Entrega': 'Delivery',
+  'até': 'to',
+  'a fazer': 'to do',
+  'Tudo entregue!': 'All delivered!',
+  'feitos de': 'done of',
+  'no período': 'in period',
+  'concluído': 'done',
+  'TOTAIS': 'TOTALS',
+  'LINHA(S) SELECIONADA(S)': 'ROW(S) SELECTED',
+  '(TODOS OS MAPAS)': '(ALL MAPS)',
+  'MAPA': 'MAP',
+  'AUTOMÁTICO': 'AUTOMATIC',
+  'FEITO': 'DONE',
+  'ASBUILT (GERADO)': 'ASBUILT (GENERATED)',
+  'Clique pra mudar o status (pendente → concluído → problema)': 'Click to change status (pending → done → issue)',
+  'Atualizar AS-BUILT:': 'Update AS-BUILT:',
+  'Marque': 'Mark',
+  'assim que começar (assim ninguém mais pega esse mapa), e': 'as soon as you start (so no one else grabs this map), and',
+  'quando terminar. As OTs pendentes só somem quando marcar ATUALIZADO.': 'when you finish. Pending WOs only clear when marked UPDATED.',
+  'OTs Pendentes': 'Pending WOs',
+  'Produção deste mapa:': "This map's production:",
+  'de': 'of',
+  'linhas': 'rows',
+  'ainda não marcadas FEITO.': 'not yet marked DONE.',
+  'Valor diferente do salvo aqui.': 'Different from the value saved here.',
+  'Usar': 'Use',
+  'Status AS-BUILT': 'AS-BUILT Status',
+  'SEM ATUALIZAÇÃO NA SEMANA (ATÉ O MOMENTO)': 'NO UPDATE THIS WEEK (SO FAR)',
+  'FAZENDO (Em Andamento)': 'IN PROGRESS (Ongoing)',
+  'ATUALIZADO (OK)': 'UPDATED (OK)',
+  'Seu Nome (Técnico)': 'Your Name (Technician)',
+  'Nome de quem está atualizando...': 'Name of who is updating...',
+  'Data': 'Date',
+  'Cancelar': 'Cancel',
+  'Salvar Atualização': 'Save Update',
+  'Editar Item:': 'Edit Item:',
+  'Cadastrar Novo Item Manual': 'Register New Manual Item',
+  'Dia de Entrega': 'Delivery Day',
+  'Ex: QUINTA': 'E.g.: THURSDAY',
+  'Mapa / Código': 'Map / Code',
+  'Atribuir à Semana': 'Assign to Week',
+  'Priorização de OTs (Novas Demandas)': 'WO Prioritization (New Demands)',
+  'Saldo Total Pendente:': 'Total Pending Balance:',
+  'OTs': 'WOs',
+  'Sugestão automática (Produção):': 'Automatic suggestion (Production):',
+  'deste mapa ainda não marcadas FEITO.': "of this map not yet marked DONE.",
+  'Diferente do saldo salvo aqui.': 'Different from the balance saved here.',
+  'Adicionar OTs Criadas': 'Add Created WOs',
+  'Somar OTs': 'Add WOs',
+  'Ajustar Saldo Manualmente (sobrescreve o total acima)': 'Manually Adjust Balance (overrides the total above)',
+  'ETAPA AS-BUILT': 'AS-BUILT STAGE',
+  'Data AS-BUILT': 'AS-BUILT Date',
+  'Técnico AS-BUILT': 'AS-BUILT Technician',
+  'Nome do técnico...': 'Technician name...',
+  'Preencha o nome do técnico antes de marcar': 'Fill in the technician name before marking',
+  'ou': 'or',
+  'o mapa continua aparecendo na Fila de Prioridade enquanto estiver "FAZENDO" ou com OTs pendentes.':
+    'the map keeps appearing in the Priority Queue while it\'s "IN PROGRESS" or has pending WOs.',
+  'ETAPA WORKBOOK': 'WORKBOOK STAGE',
+  'Status Workbook': 'Workbook Status',
+  'SIM (ATUALIZADO)': 'YES (UPDATED)',
+  'NÃO / PENDENTE': 'NO / PENDING',
+  'Data Atualização Workbook': 'Workbook Update Date',
+  'Técnico Workbook': 'Workbook Technician',
+  'ETAPA INVOICE': 'INVOICE STAGE',
+  'Status Invoice': 'Invoice Status',
+  'Data Atualização Invoice': 'Invoice Update Date',
+  'Técnico Invoice': 'Invoice Technician',
+  'Histórico do Ciclo (Sáb - Sex)': 'Cycle History (Sat - Fri)',
+  'Observações / Detalhes': 'Notes / Details',
+  'Observações adicionais...': 'Additional notes...',
+  'Salvar Produção': 'Save Production',
+  'Colar Dados do Excel': 'Paste Data from Excel',
+  'Copia (Ctrl+C) as colunas': 'Copy (Ctrl+C) the columns',
+  'direto do Excel/Google Sheets — e se quiser, inclui também as colunas de código': 'straight from Excel/Google Sheets — and if you want, also include the code columns',
+  'que elas são preenchidas sozinhas.': 'they fill in on their own.',
+  'Se você copiar junto a linha de cabeçalho (com os nomes das colunas), o sistema usa ela pra saber qual coluna é qual código, então funciona mesmo se a ordem for diferente da do sistema.':
+    'If you copy the header row along with it (with the column names), the system uses it to know which column is which code, so it works even if the order is different from the system\'s.',
+  'Sem cabeçalho, ele assume a ordem padrão dos códigos. Linhas sem data válida (cabeçalho perdido, "END INVOICE" etc.) são ignoradas automaticamente.':
+    'Without a header, it assumes the standard code order. Rows without a valid date (stray header, "END INVOICE" etc.) are ignored automatically.',
+  'Cole aqui as linhas copiadas do Excel...': 'Paste the rows copied from Excel here...',
+  'linha(s) detectada(s) e prontas pra importar.': 'row(s) detected and ready to import.',
+  'Nenhuma linha válida detectada ainda — cola os dados acima.': 'No valid row detected yet — paste the data above.',
+  'DATA': 'DATE',
+  'MAPA': 'MAP',
+  'LOCAL': 'LOCATION',
+  'NOME': 'NAME',
+  'CÓDIGOS': 'CODES',
+  'linha(s) a mais...': 'more row(s)...',
+  'Importar': 'Import',
+  'Registro(s)': 'Record(s)',
+  'Editar Produção:': 'Edit Production:',
+  'Adicionar Novo Item de Produção': 'Add New Production Item',
+  'Pendings': 'Pendings',
+  'Data': 'Date',
+  'Map / Código': 'Map / Code',
+  'Location': 'Location',
+  'Splice': 'Splice',
+  'Técnico / Name': 'Technician / Name',
+  'Type': 'Type',
+  'Type End': 'Type End',
+  'CÓDIGOS & QUANTIDADES': 'CODES & QUANTITIES',
+  'Resultado Formatado Automaticamente para a coluna ASBUILT:': 'Automatically Formatted Result for the ASBUILT column:',
+  '(Preencha as quantidades dos códigos)': '(Fill in the code quantities)',
+  'Cancelar': 'Cancel',
+  'Salvar Registro': 'Save Record',
+  'Acesse': 'Go to',
+  'e crie (ou selecione) um projeto.': 'and create (or select) a project.',
+  'Em "APIs e Serviços → Biblioteca", habilite a': 'In "APIs & Services → Library", enable',
+  'Em "APIs e Serviços → Tela de consentimento OAuth", configure o app como "Externo" e adicione seu e-mail (e dos outros que forem usar) como usuário de teste — ou publique o app.':
+    'In "APIs & Services → OAuth consent screen", set the app to "External" and add your email (and anyone else who\'ll use it) as a test user — or publish the app.',
+  'Em "APIs e Serviços → Credenciais", crie um': 'In "APIs & Services → Credentials", create an',
+  'ID do cliente OAuth 2.0': 'OAuth 2.0 Client ID',
+  'do tipo "Aplicativo da Web".': 'of type "Web application".',
+  'Em "Origens JavaScript autorizadas", adicione o endereço exato onde este arquivo fica hospedado (ex:': 'In "Authorized JavaScript origins", add the exact address where this file is hosted (e.g.:',
+  'Copie o "Client ID" gerado (termina em': 'Copy the generated "Client ID" (ends in',
+  'e cole no campo acima. Fica salvo neste navegador.': 'and paste it in the field above. It stays saved in this browser.',
+  'CONTROL PRO — Gestão Semanal por Ciclos & Desempenho': 'CONTROL PRO — Weekly Management by Cycles & Performance',
+};
 
 // ===== SUPABASE (sincronização em nuvem entre todos os funcionários) =====
 const SUPABASE_URL = 'https://xsgudmgnvifzwqbmilgz.supabase.co';
@@ -140,6 +477,10 @@ function PasswordGate({ children }) {
   const [unlocked, setUnlocked] = useState(() => localStorage.getItem(AUTH_STORAGE_KEY) === 'true');
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
+  // O seletor de idioma do site vive dentro do ProductionDashboard (depois do login), mas essa
+  // telinha de senha aparece antes disso — então lê o idioma salvo direto do localStorage aqui.
+  const gateLang = (() => { try { return localStorage.getItem(STORAGE_KEY_LANG) || 'pt'; } catch (e) { return 'pt'; } })();
+  const gt = (s) => translate(gateLang, s);
 
   if (unlocked) return children;
 
@@ -149,7 +490,7 @@ function PasswordGate({ children }) {
       localStorage.setItem(AUTH_STORAGE_KEY, 'true');
       setUnlocked(true);
     } else {
-      setError('Senha incorreta.');
+      setError(gt('Senha incorreta.'));
     }
   };
 
@@ -159,17 +500,21 @@ function PasswordGate({ children }) {
         <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 20, fontWeight: 800, color: '#00d4ff', textAlign: 'center' }}>
           CONTROL<span style={{ color: '#c8d8e8' }}>PRO</span>
         </div>
-        <div style={{ fontSize: 11, color: '#4a6070', textAlign: 'center', marginBottom: 6 }}>Acesso da Equipe — Área Restrita</div>
+        <div style={{ fontSize: 11, color: '#4a6070', textAlign: 'center', marginBottom: 6 }}>{gt('Acesso da Equipe — Área Restrita')}</div>
         <input
           type="password"
           autoFocus
           value={input}
           onChange={(e) => { setInput(e.target.value); setError(''); }}
-          placeholder="Senha da equipe"
+          placeholder={gt('Senha da equipe')}
           style={{ background: '#131920', color: '#c8d8e8', border: '1px solid #263040', borderRadius: 5, padding: '10px 12px', fontSize: 13, outline: 'none', fontFamily: "'JetBrains Mono', monospace" }}
         />
         {error && <div style={{ color: '#ff5252', fontSize: 11 }}>{error}</div>}
-        <button type="submit" style={{ background: '#00d4ff', color: '#000', border: 'none', borderRadius: 5, padding: '10px 12px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Entrar</button>
+        <button type="submit" style={{ background: '#00d4ff', color: '#000', border: 'none', borderRadius: 5, padding: '10px 12px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>{gt('Entrar')}</button>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 2 }}>
+          <button type="button" onClick={() => { try { localStorage.setItem(STORAGE_KEY_LANG, 'pt'); } catch (e) {} setError(e => e); location.reload(); }} style={{ background: gateLang === 'pt' ? 'rgba(0,212,255,0.12)' : 'transparent', color: gateLang === 'pt' ? '#00d4ff' : '#4a6070', border: `1px solid ${gateLang === 'pt' ? '#00d4ff' : '#263040'}`, borderRadius: 4, padding: '3px 9px', fontSize: 9.5, fontWeight: 800, cursor: 'pointer' }}>PT</button>
+          <button type="button" onClick={() => { try { localStorage.setItem(STORAGE_KEY_LANG, 'en'); } catch (e) {} location.reload(); }} style={{ background: gateLang === 'en' ? 'rgba(0,212,255,0.12)' : 'transparent', color: gateLang === 'en' ? '#00d4ff' : '#4a6070', border: `1px solid ${gateLang === 'en' ? '#00d4ff' : '#263040'}`, borderRadius: 4, padding: '3px 9px', fontSize: 9.5, fontWeight: 800, cursor: 'pointer' }}>EN</button>
+        </div>
       </form>
     </div>
   );
@@ -608,14 +953,15 @@ function WeeklyActivityHeatmap({ asbuiltHistory, workbookHistory, invoiceHistory
 }
 
 function StageBadge({ status, tech, date }) {
+  const { t } = useLang();
   if (status === "ENTREGUE") {
     return (
       <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ background: C.pinkSoft, color: C.pink, border: `1px solid ${C.pink}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>ENTREGUE</span>
+        <span style={{ background: C.pinkSoft, color: C.pink, border: `1px solid ${C.pink}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>{t('ENTREGUE')}</span>
         {tech && (
           <div style={{ fontSize: 9, color: C.pink, fontWeight: 600 }}>
-            Por: <span style={{ color: C.text }}>{tech}</span>
-            {date && <span style={{ color: C.textDim, display: "block", fontSize: 8.5 }}>Em: {date}</span>}
+            {t('Por: ')}<span style={{ color: C.text }}>{tech}</span>
+            {date && <span style={{ color: C.textDim, display: "block", fontSize: 8.5 }}>{t('Em: ')}{date}</span>}
           </div>
         )}
       </div>
@@ -624,11 +970,11 @@ function StageBadge({ status, tech, date }) {
   if (status === "OK" || status === "SIM") {
     return (
       <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>ATUALIZADO</span>
+        <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>{t('ATUALIZADO')}</span>
         {tech && (
           <div style={{ fontSize: 9, color: C.accent, fontWeight: 600 }}>
-            Por: <span style={{ color: C.text }}>{tech}</span>
-            {date && <span style={{ color: C.textDim, display: "block", fontSize: 8.5 }}>Em: {date}</span>}
+            {t('Por: ')}<span style={{ color: C.text }}>{tech}</span>
+            {date && <span style={{ color: C.textDim, display: "block", fontSize: 8.5 }}>{t('Em: ')}{date}</span>}
           </div>
         )}
       </div>
@@ -637,19 +983,19 @@ function StageBadge({ status, tech, date }) {
   if (status === "FAZENDO") {
     return (
       <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ background: "rgba(255,171,0,0.15)", color: C.amber, border: `1px solid ${C.amber}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>FAZENDO</span>
+        <span style={{ background: "rgba(255,171,0,0.15)", color: C.amber, border: `1px solid ${C.amber}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, width: "fit-content" }}>{t('FAZENDO')}</span>
         {tech && (
           <div style={{ fontSize: 9, color: C.amber, fontWeight: 600 }}>
-            Por: <span style={{ color: C.text }}>{tech}</span>
+            {t('Por: ')}<span style={{ color: C.text }}>{tech}</span>
           </div>
         )}
       </div>
     );
   }
   if (status === "SEM_ATUALIZACAO_SEMANA") {
-    return <span style={{ background: C.panel2, color: C.textFaint, border: `1px solid ${C.border2}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>SEM ATUALIZAÇÃO NA SEMANA</span>;
+    return <span style={{ background: C.panel2, color: C.textFaint, border: `1px solid ${C.border2}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{t('SEM ATUALIZAÇÃO NA SEMANA')}</span>;
   }
-  return <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>PENDENTE</span>;
+  return <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{t('PENDENTE')}</span>;
 }
 
 // ===== ABA AUTOMAÇÃO — DETECÇÃO DE TAGS NO MAPA POR IA =====
@@ -756,6 +1102,7 @@ function defaultRedlineMonth() {
 }
 
 function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
+  const { t } = useLang();
   const mapKeys = useMemo(() => Object.keys(pendingsByMap).sort(), [pendingsByMap]);
   const [selectedMap, setSelectedMap] = useState(mapKeys[0] || "");
 
@@ -928,21 +1275,21 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
       {/* SELETOR DE MAPA */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Mapa:</span>
+        <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Mapa:')}</span>
         <select value={selectedMap} onChange={(e) => setSelectedMap(e.target.value)} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "7px 10px", fontSize: 11, fontWeight: 700, outline: "none", cursor: "pointer" }}>
-          <option value="" style={{ background: C.panel }}>— selecione —</option>
+          <option value="" style={{ background: C.panel }}>{t('— selecione —')}</option>
           {mapKeys.map(k => <option key={k} value={k} style={{ background: C.panel }}>{k}</option>)}
         </select>
         <button onClick={createNewMap} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 5, padding: "7px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-          <Plus size={13} /> Novo Mapa
+          <Plus size={13} /> {t('Novo Mapa')}
         </button>
         {selectedMap && (
           <>
             <button onClick={exportPendingsXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, borderRadius: 5, padding: "7px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-              <Download size={13} /> Exportar Pendings (.XLSX)
+              <Download size={13} /> {t('Exportar Pendings (.XLSX)')}
             </button>
             <button onClick={deleteCurrentMap} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "7px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", marginLeft: "auto" }}>
-              <Trash2 size={12} /> Apagar Mapa
+              <Trash2 size={12} /> {t('Apagar Mapa')}
             </button>
           </>
         )}
@@ -950,7 +1297,7 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
 
       {!selectedMap && (
         <div style={{ padding: 30, textAlign: "center", color: C.textFaint, fontSize: 12 }}>
-          Selecione um mapa acima ou crie um novo pra começar a marcar os pendings.
+          {t('Selecione um mapa acima ou crie um novo pra começar a marcar os pendings.')}
         </div>
       )}
 
@@ -982,7 +1329,7 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
             {data.groups.map(g => (
               <div key={g.id} style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 10, width: 200 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                  <span onClick={() => renameGroup(g.id)} style={{ fontSize: 11, fontWeight: 800, color: C.text, cursor: "pointer" }} title="Clique pra renomear">{g.prefix} ({g.items.filter(i => i.status === 'DONE').length}/{g.items.length})</span>
+                  <span onClick={() => renameGroup(g.id)} style={{ fontSize: 11, fontWeight: 800, color: C.text, cursor: "pointer" }} title={t('Clique pra renomear')}>{g.prefix} ({g.items.filter(i => i.status === 'DONE').length}/{g.items.length})</span>
                   <X size={13} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => deleteGroup(g.id)} />
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 340, overflowY: "auto", marginBottom: 8 }}>
@@ -990,11 +1337,11 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
                     <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                       <div
                         onClick={() => cycleItemStatus(g.id, item.id)}
-                        title="Clique pra mudar o status (pendente → concluído → problema)"
+                        title={t('Clique pra mudar o status (pendente → concluído → problema)')}
                         style={{ ...itemStyle(item.status), flex: 1, borderRadius: 4, padding: "4px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", display: "flex", justifyContent: "space-between", gap: 6 }}
                       >
                         <span>{item.code}</span>
-                        <span>{item.status === 'DONE' ? 'DONE' : ''}</span>
+                        <span>{item.status === 'DONE' ? t('DONE') : ''}</span>
                       </div>
                       <X size={11} color={C.textFaint} style={{ cursor: "pointer", flexShrink: 0 }} onClick={() => deleteItem(g.id, item.id)} />
                     </div>
@@ -1004,20 +1351,20 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
                       key={item.id + '-note'}
                       value={item.note}
                       onChange={(e) => updateItemNote(g.id, item.id, e.target.value)}
-                      placeholder="Descreva o problema..."
+                      placeholder={t('Descreva o problema...')}
                       style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, borderRadius: 4, padding: "3px 6px", fontSize: 9.5, outline: "none" }}
                     />
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => addSingleItem(g.id)} style={{ flex: 1, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ Item</button>
-                  <button onClick={() => generateRange(g.id)} title="Gera vários itens de uma vez, só perguntando a quantidade" style={{ flex: 1, background: "transparent", color: C.purple, border: `1px dashed ${C.purple}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ Quantidade</button>
+                  <button onClick={() => addSingleItem(g.id)} style={{ flex: 1, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ {t('Item')}</button>
+                  <button onClick={() => generateRange(g.id)} title={t('Gera vários itens de uma vez, só perguntando a quantidade')} style={{ flex: 1, background: "transparent", color: C.purple, border: `1px dashed ${C.purple}`, borderRadius: 4, padding: "5px 4px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>+ {t('Quantidade')}</button>
                 </div>
               </div>
             ))}
 
             <button onClick={addGroup} style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px dashed ${C.border2}`, borderRadius: 6, padding: 10, width: 100, height: 60, cursor: "pointer" }}>
-              <Plus size={16} /> <span style={{ fontSize: 9.5, fontWeight: 700 }}>Novo Grupo</span>
+              <Plus size={16} /> <span style={{ fontSize: 9.5, fontWeight: 700 }}>{t('Novo Grupo')}</span>
             </button>
           </div>
 
@@ -1049,7 +1396,7 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
               </tbody>
             </table>
             <button onClick={addLocation} style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 4, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-              <Plus size={11} /> Adicionar Location
+              <Plus size={11} /> {t('Adicionar Location')}
             </button>
           </div>
         </>
@@ -1059,6 +1406,7 @@ function PendingsTab({ pendingsByMap, setPendingsByMap, suggestedMaps }) {
 }
 
 function RedlinesTab({ redlinesData, setRedlinesData }) {
+  const { t } = useLang();
   const monthKeys = useMemo(() => Object.keys(redlinesData.months || {}), [redlinesData]);
   const [selectedMonth, setSelectedMonth] = useState(redlinesData.currentMonth || monthKeys[0] || "");
 
@@ -1158,7 +1506,7 @@ function RedlinesTab({ redlinesData, setRedlinesData }) {
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
       {/* SELETOR DE MÊS */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Mês:</span>
+        <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Mês:')}</span>
         {monthKeys.map(k => (
           <button
             key={k}
@@ -1172,15 +1520,15 @@ function RedlinesTab({ redlinesData, setRedlinesData }) {
           >{k}</button>
         ))}
         <button onClick={createNewMonth} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-          <Plus size={13} /> Novo Mês
+          <Plus size={13} /> {t('Novo Mês')}
         </button>
         {selectedMonth && (
           <>
             <button onClick={exportRedlinesXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-              <Download size={13} /> Exportar Redlines (.XLSX)
+              <Download size={13} /> {t('Exportar Redlines (.XLSX)')}
             </button>
             <button onClick={deleteCurrentMonth} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", marginLeft: "auto" }}>
-              <Trash2 size={12} /> Apagar Mês
+              <Trash2 size={12} /> {t('Apagar Mês')}
             </button>
           </>
         )}
@@ -1188,14 +1536,14 @@ function RedlinesTab({ redlinesData, setRedlinesData }) {
 
       {!selectedMonth && (
         <div style={{ padding: 30, textAlign: "center", color: C.textFaint, fontSize: 12 }}>
-          Crie um mês acima (ex: AGOSTO) pra começar a preencher o Redlines.
+          {t('Crie um mês acima (ex: AGOSTO) pra começar a preencher o Redlines.')}
         </div>
       )}
 
       {selectedMonth && monthData && (
         <>
           <div style={{ fontSize: 9.5, color: C.textDim, lineHeight: 1.5 }}>
-            Clique no quadradinho de cor à esquerda de cada linha pra alternar: sem cor → <span style={{ color: C.green, fontWeight: 700 }}>verde (feito)</span> → <span style={{ color: '#e0c200', fontWeight: 700 }}>amarelo (aguardando/atenção)</span> → <span style={{ color: C.red, fontWeight: 700 }}>vermelho (problema)</span>. As cores saem iguais na planilha exportada.
+            {t('Clique no quadradinho de cor à esquerda de cada linha pra alternar: sem cor →')} <span style={{ color: C.green, fontWeight: 700 }}>{t('verde (feito)')}</span> → <span style={{ color: '#e0c200', fontWeight: 700 }}>{t('amarelo (aguardando/atenção)')}</span> → <span style={{ color: C.red, fontWeight: 700 }}>{t('vermelho (problema)')}</span>. {t('As cores saem iguais na planilha exportada.')}
           </div>
 
           {/* TABELA REDLINE */}
@@ -1216,7 +1564,7 @@ function RedlinesTab({ redlinesData, setRedlinesData }) {
                     <td style={{ border: `1px solid ${C.borderSoft}`, textAlign: "center" }}>
                       <div
                         onClick={() => cycleRowColor(row.id)}
-                        title="Clique pra mudar a cor da linha"
+                        title={t('Clique pra mudar a cor da linha')}
                         style={{ width: 16, height: 16, margin: "0 auto", borderRadius: 3, border: `1px solid ${C.border2}`, cursor: "pointer", background: row.color === 'NONE' ? C.panel2 : 'transparent' }}
                       />
                     </td>
@@ -1234,20 +1582,20 @@ function RedlinesTab({ redlinesData, setRedlinesData }) {
             </table>
           </div>
           <button onClick={addRow} style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 4, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-            <Plus size={12} /> Nova Linha
+            <Plus size={12} /> {t('Nova Linha')}
           </button>
 
           {/* PENDÊNCIAS DO MÊS */}
           <div style={{ maxWidth: 640 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: C.amber, textTransform: "uppercase", marginBottom: 6 }}>Pendências do Mês</div>
-            <div style={{ fontSize: 9.5, color: C.textDim, marginBottom: 8 }}>Anota aqui pendências gerais (não de uma linha específica), tipo "GR06E — falta fotos" ou "RU80E — falta PDF". Sai listado junto na exportação.</div>
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.amber, textTransform: "uppercase", marginBottom: 6 }}>{t('Pendências do Mês')}</div>
+            <div style={{ fontSize: 9.5, color: C.textDim, marginBottom: 8 }}>{t('Anota aqui pendências gerais (não de uma linha específica), tipo "GR06E — falta fotos" ou "RU80E — falta PDF". Sai listado junto na exportação.')}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {monthData.pendencias.map(pd => (
                 <div key={pd.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <input
                     value={pd.text}
                     onChange={(e) => updatePendencia(pd.id, e.target.value)}
-                    placeholder="Ex: GR06E — falta fotos do splice"
+                    placeholder={t('Ex: GR06E — falta fotos do splice')}
                     style={{ flex: 1, background: C.amberSoft, color: C.text, border: `1px solid ${C.amber}`, borderRadius: 4, padding: "6px 8px", fontSize: 11, outline: "none" }}
                   />
                   <X size={12} color={C.textFaint} style={{ cursor: "pointer", flexShrink: 0 }} onClick={() => deletePendencia(pd.id)} />
@@ -1255,7 +1603,7 @@ function RedlinesTab({ redlinesData, setRedlinesData }) {
               ))}
             </div>
             <button onClick={addPendencia} style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.amber, border: `1px dashed ${C.amber}`, borderRadius: 4, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-              <Plus size={11} /> Adicionar Pendência
+              <Plus size={11} /> {t('Adicionar Pendência')}
             </button>
           </div>
         </>
@@ -1464,6 +1812,7 @@ function buildPendingsSheet(wb, mapName, data) {
 }
 
 function FiberCalcTab() {
+  const { t } = useLang();
   const [sheets, setSheets] = useState([]); // [{id, name, code, mode, rows:[{id,text,qty}]}]
   const [activeSheetId, setActiveSheetId] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
@@ -1612,7 +1961,7 @@ function FiberCalcTab() {
                 <button
                   onClick={() => setActiveSheetId(s.id)}
                   onDoubleClick={() => { setRenamingId(s.id); setRenameValue(s.name); }}
-                  title="Clique duplo para renomear"
+                  title={t('Clique duplo para renomear')}
                   style={{
                     display: "flex", alignItems: "center", gap: 8,
                     background: s.id === activeSheetId ? C.pinkSoft : C.panel2,
@@ -1634,22 +1983,22 @@ function FiberCalcTab() {
           ))}
         </div>
         <button onClick={() => addSheet('normal')} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.pink, border: `1px dashed ${C.pink}`, borderRadius: 5, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-          <Plus size={13} /> Novo Cálculo
+          <Plus size={13} /> {t('Novo Cálculo')}
         </button>
-        <button onClick={() => addSheet('ribbon')} title="Cálculo dedicado onde cada unidade equivale a 12 fibras (ribbon)" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 5, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-          <Plus size={13} /> Novo Cálculo Ribbon (×12)
+        <button onClick={() => addSheet('ribbon')} title={t('Cálculo dedicado onde cada unidade equivale a 12 fibras (ribbon)')} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 5, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+          <Plus size={13} /> {t('Novo Cálculo Ribbon (×12)')}
         </button>
       </div>
 
       <Panel
-        title={isRibbon ? "Calculadora de Fibra — Riscando (Ribbon ×12)" : "Calculadora de Fibra — Riscando"}
+        title={isRibbon ? t('Calculadora de Fibra — Riscando (Ribbon ×12)') : t('Calculadora de Fibra — Riscando')}
         icon={<List size={13} color={C.pink} />}
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ display: "flex", gap: 3, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 3 }}>
               <button
                 onClick={() => setMode('normal')}
-                title="1 unidade = 1 fibra"
+                title={t('1 unidade = 1 fibra')}
                 style={{
                   background: !isRibbon ? C.pinkSoft : "transparent",
                   color: !isRibbon ? C.pink : C.textDim,
@@ -1657,11 +2006,11 @@ function FiberCalcTab() {
                   borderRadius: 4, padding: "5px 10px", fontSize: 10.5, fontWeight: 800, cursor: "pointer"
                 }}
               >
-                Normal
+                {t('Normal')}
               </button>
               <button
                 onClick={() => setMode('ribbon')}
-                title="1 unidade = 12 fibras (ribbon)"
+                title={t('1 unidade = 12 fibras (ribbon)')}
                 style={{
                   background: isRibbon ? C.accentSoft : "transparent",
                   color: isRibbon ? C.accent : C.textDim,
@@ -1669,10 +2018,10 @@ function FiberCalcTab() {
                   borderRadius: 4, padding: "5px 10px", fontSize: 10.5, fontWeight: 800, cursor: "pointer"
                 }}
               >
-                Ribbon ×12
+                {t('Ribbon ×12')}
               </button>
             </div>
-            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Código:</span>
+            <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Código:')}</span>
             <select
               value={activeSheet.code}
               onChange={(e) => setCode(e.target.value)}
@@ -1682,24 +2031,24 @@ function FiberCalcTab() {
                 <option key={f.id} value={f.id} style={{ background: C.panel }}>{f.id}</option>
               ))}
             </select>
-            <button onClick={handleClear} title="Limpar linhas" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "6px 10px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-              <RotateCcw size={12} /> Limpar
+            <button onClick={handleClear} title={t('Limpar linhas')} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "6px 10px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+              <RotateCcw size={12} /> {t('Limpar')}
             </button>
           </div>
         }
       >
         {isRibbon && (
           <div style={{ fontSize: 11, color: C.accent, background: C.accentSoft || C.panel2, border: `1px solid ${C.accent}`, borderRadius: 6, padding: "8px 12px", marginBottom: 10 }}>
-            Modo Ribbon ativo: cada unidade contada na linha vale <strong>12 fibras</strong>. Ex: faixa #1-4 (4 ribbons) = 48 fibras.
+            {t('Modo Ribbon ativo: cada unidade contada na linha vale')} <strong>{t('12 fibras')}</strong>. {t('Ex: faixa #1-4 (4 ribbons) = 48 fibras.')}
           </div>
         )}
         {/* TABELA DE LINHAS */}
         <div style={{ display: "flex", flexDirection: "column", gap: 0, border: `1px solid ${C.border}`, borderRadius: 6, overflow: "hidden" }}>
           <div style={{ display: "grid", gridTemplateColumns: gridCols, gap: 0, background: C.panel2, padding: "10px 14px", borderBottom: `1px solid ${C.border}` }}>
             <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>#</div>
-            <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>Linha</div>
-            <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>{isRibbon ? "Ribbons" : "Fibras"}</div>
-            {isRibbon && <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>Fibras</div>}
+            <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>{t('Linha')}</div>
+            <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>{isRibbon ? t('Ribbons') : t('Fibras')}</div>
+            {isRibbon && <div style={{ fontSize: 10, fontWeight: 800, color: C.textDim, textTransform: "uppercase" }}>{t('Fibras')}</div>}
             <div></div>
             <div></div>
           </div>
@@ -1709,7 +2058,7 @@ function FiberCalcTab() {
               <input
                 value={r.text}
                 onChange={(e) => updateRow(r.id, 'text', e.target.value)}
-                placeholder="Ex: SE010 IN#1 TO FT031#1"
+                placeholder={t('Ex: SE010 IN#1 TO FT031#1')}
                 style={{ background: "transparent", color: C.text, border: "none", outline: "none", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", padding: "6px 8px" }}
               />
               <input
@@ -1717,7 +2066,7 @@ function FiberCalcTab() {
                 value={r.qty}
                 onChange={(e) => updateRow(r.id, 'qty', e.target.value)}
                 placeholder="0"
-                title={r.autoQty ? "Calculado automaticamente a partir da faixa # na linha" : "Valor manual (clique no ↺ para voltar ao automático)"}
+                title={r.autoQty ? t('Calculado automaticamente a partir da faixa # na linha') : t('Valor manual (clique no ↺ para voltar ao automático)')}
                 style={{ background: C.panel2, color: r.autoQty ? C.accent : C.pink, border: `1px solid ${r.autoQty ? C.accent : C.border2}`, borderRadius: 5, outline: "none", fontSize: 12, fontWeight: 800, padding: "6px 8px", width: isRibbon ? 56 : 68, textAlign: "right" }}
               />
               {isRibbon && (
@@ -1727,7 +2076,7 @@ function FiberCalcTab() {
               )}
               <div style={{ display: "flex", justifyContent: "center" }}>
                 {!r.autoQty && (
-                  <RotateCcw size={12} color={C.textDim} onClick={() => resetAutoQty(r.id)} title="Voltar ao cálculo automático" style={{ cursor: "pointer" }} />
+                  <RotateCcw size={12} color={C.textDim} onClick={() => resetAutoQty(r.id)} title={t('Voltar ao cálculo automático')} style={{ cursor: "pointer" }} />
                 )}
               </div>
               <X size={14} color={C.textFaint} onClick={() => removeRow(r.id)} style={{ cursor: "pointer", justifySelf: "center" }} />
@@ -1735,7 +2084,7 @@ function FiberCalcTab() {
           ))}
           <div style={{ display: "grid", gridTemplateColumns: gridCols, gap: 0, alignItems: "center", padding: "10px 14px", background: C.panel2, borderTop: `1px solid ${C.border}` }}>
             <div></div>
-            <div style={{ fontSize: 12, fontWeight: 800, color: C.text, fontFamily: FONT_HEAD }}>Total</div>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.text, fontFamily: FONT_HEAD }}>{t('Total')}</div>
             <div style={{ fontSize: 14, fontWeight: 800, color: isRibbon ? C.accent : C.pink, textAlign: "right", paddingRight: 8 }}>{isRibbon ? rawTotal : total}</div>
             {isRibbon && <div style={{ fontSize: 14, fontWeight: 800, color: C.pink, textAlign: "right", paddingRight: 8 }}>{total}</div>}
             <div></div>
@@ -1744,17 +2093,17 @@ function FiberCalcTab() {
         </div>
 
         <button onClick={addRow} style={{ alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px dashed ${C.accent}`, borderRadius: 5, padding: "7px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-          <Plus size={13} /> Adicionar Linha
+          <Plus size={13} /> {t('Adicionar Linha')}
         </button>
 
         {/* RESULTADO / RISCANDO */}
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "14px 16px", marginTop: 4 }}>
-          <span style={{ fontSize: 12.5, color: C.text }}>Riscando: <span style={{ color: C.textDim }}>{equation}</span> = <span style={{ color: C.pink, fontWeight: 800 }}>{total}</span> →</span>
+          <span style={{ fontSize: 12.5, color: C.text }}>{t('Riscando:')} <span style={{ color: C.textDim }}>{equation}</span> = <span style={{ color: C.pink, fontWeight: 800 }}>{total}</span> →</span>
           <span style={{ background: C.pinkSoft, color: C.pink, border: `1px solid ${C.pink}`, borderRadius: 5, padding: "5px 12px", fontSize: 13, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace" }}>
             {generatedCode}
           </span>
           <button onClick={handleCopy} style={{ display: "flex", alignItems: "center", gap: 6, background: copiedFeedback ? C.greenSoft : "transparent", color: copiedFeedback ? C.green : C.textDim, border: `1px solid ${copiedFeedback ? C.green : C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-            <Copy size={12} /> {copiedFeedback ? "Copiado!" : "Copiar Código"}
+            <Copy size={12} /> {copiedFeedback ? t('Copiado!') : t('Copiar Código')}
           </button>
         </div>
       </Panel>
@@ -1912,6 +2261,7 @@ const thStyleDriveSm = { textAlign: "left", padding: "5px 8px", color: C.textFai
 const tdStyleDriveSm = { padding: "5px 8px", color: C.textDim };
 
 function DriveScanTab() {
+  const { t, lang } = useLang();
   const [config, setConfig] = useState(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', sharedDriveId: '' }; }
     catch (e) { return { clientId: '', cycleStartDate: '', sharedDriveId: '' }; }
@@ -2242,44 +2592,44 @@ function DriveScanTab() {
 
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-      <Panel title="Conexão com o Google Drive" icon={<CloudIcon size={13} color={C.textDim} />}>
+      <Panel title={t('Conexão com o Google Drive')} icon={<CloudIcon size={13} color={C.textDim} />}>
         <div style={{ fontSize: 10, color: C.textFaint, lineHeight: 1.6, marginBottom: 10 }}>
-          Escaneia automaticamente todas as planilhas <strong>"PRODUCTION LIST"</strong> do Drive e mostra quais mapas têm linhas de trabalho abaixo do último <strong>"END INVOICE"</strong> — ou seja, trabalho já feito mas ainda não fechado. A leitura acontece direto no seu navegador; nada passa por servidor além do Google.
+          {t('Escaneia automaticamente todas as planilhas "PRODUCTION LIST" do Drive e mostra quais mapas têm linhas de trabalho abaixo do último "END INVOICE" — ou seja, trabalho já feito mas ainda não fechado. A leitura acontece direto no seu navegador; nada passa por servidor além do Google.')}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "2fr auto auto", gap: 10, alignItems: "end" }}>
-          <Field label="Client ID OAuth (Google Cloud Console)">
+          <Field label={t('Client ID OAuth (Google Cloud Console)')}>
             <Input placeholder="xxxxxxxx.apps.googleusercontent.com" value={config.clientId} onChange={(e) => setConfig((c) => ({ ...c, clientId: e.target.value.trim() }))} />
           </Field>
           {!token ? (
             <button onClick={connect} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer", height: 32 }}>
-              {gisReady ? "Conectar ao Drive" : "Carregando..."}
+              {gisReady ? t('Conectar ao Drive') : t('Carregando...')}
             </button>
           ) : (
             <button onClick={disconnect} style={{ background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer", height: 32 }}>
-              Desconectar
+              {t('Desconectar')}
             </button>
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: token ? C.green : C.textFaint, fontWeight: 700, height: 32 }}>
-            {token ? "● Conectado" : "○ Não conectado"}
+            {token ? `● ${t('Conectado')}` : `○ ${t('Não conectado')}`}
           </div>
         </div>
         {token && (
           <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr auto", gap: 10, alignItems: "end", marginTop: 12 }}>
-            <Field label="Drive Compartilhado a varrer (deixe vazio para varrer todos)">
+            <Field label={t('Drive Compartilhado a varrer (deixe vazio para varrer todos)')}>
               <select
                 value={config.sharedDriveId || ''}
                 onChange={(e) => setConfig((c) => ({ ...c, sharedDriveId: e.target.value }))}
                 style={{ background: C.bg2 || '#131920', color: C.textDim || '#c8d8e8', border: `1px solid ${C.border2 || '#263040'}`, borderRadius: 5, padding: '8px 10px', fontSize: 11, fontFamily: "'JetBrains Mono', monospace", width: '100%' }}
               >
-                <option value="">— Todos os Drives Compartilhados —</option>
+                <option value="">{t('— Todos os Drives Compartilhados —')}</option>
                 {sharedDrives.map((d) => (
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Ou cole o ID do Drive manualmente">
+            <Field label={t('Ou cole o ID do Drive manualmente')}>
               <Input
-                placeholder="ID do Drive Compartilhado"
+                placeholder={t('ID do Drive Compartilhado')}
                 value={config.sharedDriveId || ''}
                 onChange={(e) => setConfig((c) => ({ ...c, sharedDriveId: e.target.value.trim() }))}
               />
@@ -2290,33 +2640,33 @@ function DriveScanTab() {
               title="Recarrega a lista de Drives Compartilhados"
               style={{ background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: loadingDrives ? "default" : "pointer", height: 32 }}
             >
-              {loadingDrives ? "..." : "Recarregar lista"}
+              {loadingDrives ? '...' : t('Recarregar lista')}
             </button>
           </div>
         )}
         {token && config.sharedDriveId && (
           <div style={{ fontSize: 10, color: C.green, marginTop: 8 }}>
-            ✓ Varredura restrita a: <strong>{(sharedDrives.find((d) => d.id === config.sharedDriveId) || {}).name || config.sharedDriveId}</strong> — os demais drives da organização ficam de fora.
+            ✓ {t('Varredura restrita a:')} <strong>{(sharedDrives.find((d) => d.id === config.sharedDriveId) || {}).name || config.sharedDriveId}</strong> — {t('os demais drives da organização ficam de fora.')}
           </div>
         )}
       </Panel>
 
       <Panel
-        title="Varredura de Mapas Pendentes"
+        title={t('Varredura de Mapas Pendentes')}
         icon={<Search size={13} color={C.textDim} />}
         right={
           <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
-            <Field label="Ciclo de faturamento desde (fallback sem END INVOICE)">
+            <Field label={t('Ciclo de faturamento desde (fallback sem END INVOICE)')}>
               <Input type="date" value={config.cycleStartDate || ''} onChange={(e) => setConfig((c) => ({ ...c, cycleStartDate: e.target.value }))} style={{ width: 168 }} />
             </Field>
-            <Field label="Modificados nos últimos (dias)">
+            <Field label={t('Modificados nos últimos (dias)')}>
               <Input type="number" min="0" value={days} onChange={(e) => setDays(e.target.value)} style={{ width: 90 }} />
             </Field>
             <button onClick={runScan} disabled={scanning || !token} style={{ background: scanning ? C.textFaint : C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: scanning ? "default" : "pointer", height: 32 }}>
-              {scanning ? `Escaneando ${progress.done}/${progress.total}...` : "Escanear Agora"}
+              {scanning ? `${t('Escaneando')} ${progress.done}/${progress.total}...` : t('Escanear Agora')}
             </button>
             <button onClick={exportScanXLSX} disabled={!results.length} title="Exporta a varredura atual em .xlsx colorido, igual ao Controle Geral" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: results.length ? C.accent : C.textFaint, border: `1px solid ${results.length ? C.accent : C.border2}`, borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: results.length ? "pointer" : "not-allowed", height: 32 }}>
-              <Download size={13} /> Exportar XLSX
+              <Download size={13} /> {t('Exportar XLSX')}
             </button>
           </div>
         }
@@ -2326,21 +2676,21 @@ function DriveScanTab() {
         )}
 
         {lastScan && (
-          <div style={{ fontSize: 9.5, color: C.textFaint }}>Última varredura: {new Date(lastScan).toLocaleString("pt-BR")}</div>
+          <div style={{ fontSize: 9.5, color: C.textFaint }}>{t('Última varredura: ')}{new Date(lastScan).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR')}</div>
         )}
 
         {results.length > 0 && (
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <StatChip label="Mapas com pendência" value={mapsWithPending} color={C.red} />
-            <StatChip label="Linhas pendentes (total)" value={totalPending} color={C.amber} />
-            <StatChip label="Mapas em dia" value={mapsUpToDate} color={C.green} />
-            {mapsWithError > 0 && <StatChip label="Falharam ao abrir" value={mapsWithError} color={C.textDim} />}
+            <StatChip label={t('Mapas com pendência')} value={mapsWithPending} color={C.red} />
+            <StatChip label={t('Linhas pendentes (total)')} value={totalPending} color={C.amber} />
+            <StatChip label={t('Mapas em dia')} value={mapsUpToDate} color={C.green} />
+            {mapsWithError > 0 && <StatChip label={t('Falharam ao abrir')} value={mapsWithError} color={C.textDim} />}
           </div>
         )}
 
         {results.length === 0 && !scanning && (
           <div style={{ fontSize: 10.5, color: C.textFaint, padding: "24px 0", textAlign: "center" }}>
-            Nenhuma varredura feita ainda. Conecte ao Drive acima e clique em "Escanear Agora".
+            {t('Nenhuma varredura feita ainda. Conecte ao Drive acima e clique em "Escanear Agora".')}
           </div>
         )}
 
@@ -2349,10 +2699,10 @@ function DriveScanTab() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
               <thead>
                 <tr>
-                  <th style={thStyleDrive}>Mapa</th>
-                  <th style={thStyleDrive}>Arquivo</th>
-                  <th style={thStyleDrive}>Modificado</th>
-                  <th style={thStyleDrive}>Situação</th>
+                  <th style={thStyleDrive}>{t('Mapa')}</th>
+                  <th style={thStyleDrive}>{t('Arquivo')}</th>
+                  <th style={thStyleDrive}>{t('Modificado')}</th>
+                  <th style={thStyleDrive}>{t('Situação')}</th>
                   <th style={thStyleDrive}></th>
                 </tr>
               </thead>
@@ -2364,19 +2714,19 @@ function DriveScanTab() {
                       <td style={{ ...tdStyleDrive, color: C.textFaint }}>
                         <a href={r.webViewLink} target="_blank" rel="noreferrer" style={{ color: C.textDim }}>{r.fileName}</a>
                       </td>
-                      <td style={tdStyleDrive}>{r.modifiedTime ? new Date(r.modifiedTime).toLocaleString("pt-BR") : "—"}</td>
+                      <td style={tdStyleDrive}>{r.modifiedTime ? new Date(r.modifiedTime).toLocaleString('pt-BR') : "—"}</td>
                       <td style={{ ...tdStyleDrive, fontWeight: 800, color: r.error ? C.textFaint : (r.pendingCount > 0 ? C.red : C.green) }}>
-                        {r.error ? `ERRO: ${r.error.slice(0, 60)}` : (r.pendingCount === 0 ? "EM DIA" : `${r.pendingCount} linha(s) pendente(s)`)}
+                        {r.error ? `${t('ERRO:')} ${r.error.slice(0, 60)}` : (r.pendingCount === 0 ? t('EM DIA') : `${r.pendingCount} ${t('linha(s) pendente(s)')}`)}
                         {r.usedDateFallback && r.pendingCount > 0 && (
                           <span title="Essa planilha não tem nenhum 'END INVOICE' marcado — a contagem usou a data de início do ciclo de faturamento como critério." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
-                            por data
+                            {t('por data')}
                           </span>
                         )}
                       </td>
                       <td style={tdStyleDrive}>
                         {r.pendingCount > 0 && (
                           <button onClick={() => setExpandedMap(expandedMap === r.fileId ? null : r.fileId)} style={{ background: "transparent", border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 4, padding: "3px 8px", fontSize: 9.5, cursor: "pointer" }}>
-                            {expandedMap === r.fileId ? "Ocultar" : "Ver linhas"}
+                            {expandedMap === r.fileId ? t('Ocultar') : t('Ver linhas')}
                           </button>
                         )}
                       </td>
@@ -2388,11 +2738,11 @@ function DriveScanTab() {
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5 }}>
                               <thead>
                                 <tr>
-                                  <th style={thStyleDriveSm}>Data</th>
-                                  <th style={thStyleDriveSm}>Location</th>
-                                  <th style={thStyleDriveSm}>Splice</th>
-                                  <th style={thStyleDriveSm}>Técnico</th>
-                                  <th style={thStyleDriveSm}>Tipo</th>
+                                  <th style={thStyleDriveSm}>{t('Data')}</th>
+                                  <th style={thStyleDriveSm}>{t('Location')}</th>
+                                  <th style={thStyleDriveSm}>{t('Splice')}</th>
+                                  <th style={thStyleDriveSm}>{t('Técnico')}</th>
+                                  <th style={thStyleDriveSm}>{t('Tipo')}</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -2419,14 +2769,14 @@ function DriveScanTab() {
         )}
       </Panel>
 
-      <Panel title="Como configurar o acesso ao Google Drive (uma vez só)" icon={<Link2 size={13} color={C.amber} />}>
+      <Panel title={t('Como configurar o acesso ao Google Drive (uma vez só)')} icon={<Link2 size={13} color={C.amber} />}>
         <ol style={{ fontSize: 10, color: C.textDim, lineHeight: 2, paddingLeft: 18, margin: 0 }}>
-          <li>Acesse <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>console.cloud.google.com</a> e crie (ou selecione) um projeto.</li>
-          <li>Em "APIs e Serviços → Biblioteca", habilite a <strong>Google Drive API</strong>.</li>
-          <li>Em "APIs e Serviços → Tela de consentimento OAuth", configure o app como "Externo" e adicione seu e-mail (e dos outros que forem usar) como usuário de teste — ou publique o app.</li>
-          <li>Em "APIs e Serviços → Credenciais", crie um <strong>ID do cliente OAuth 2.0</strong> do tipo "Aplicativo da Web".</li>
-          <li>Em "Origens JavaScript autorizadas", adicione o endereço exato onde este arquivo fica hospedado (ex: <code>https://seusite.com</code>).</li>
-          <li>Copie o "Client ID" gerado (termina em <code>.apps.googleusercontent.com</code>) e cole no campo acima. Fica salvo neste navegador.</li>
+          <li>{t('Acesse')} <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>console.cloud.google.com</a> {t('e crie (ou selecione) um projeto.')}</li>
+          <li>{t('Em "APIs e Serviços → Biblioteca", habilite a')} <strong>Google Drive API</strong>.</li>
+          <li>{t('Em "APIs e Serviços → Tela de consentimento OAuth", configure o app como "Externo" e adicione seu e-mail (e dos outros que forem usar) como usuário de teste — ou publique o app.')}</li>
+          <li>{t('Em "APIs e Serviços → Credenciais", crie um')} <strong>{t('ID do cliente OAuth 2.0')}</strong> {t('do tipo "Aplicativo da Web".')}</li>
+          <li>{t('Em "Origens JavaScript autorizadas", adicione o endereço exato onde este arquivo fica hospedado (ex:')} <code>https://seusite.com</code>).</li>
+          <li>{t('Copie o "Client ID" gerado (termina em')} <code>.apps.googleusercontent.com</code>) {t('e cole no campo acima. Fica salvo neste navegador.')}</li>
         </ol>
       </Panel>
     </div>
@@ -2434,6 +2784,7 @@ function DriveScanTab() {
 }
 
 function AutomacaoMapaTab({ productionRows = [], mapLabel = '' }) {
+  const { t } = useLang();
   const [frameUrl, setFrameUrl] = useState(null);
   const [frameError, setFrameError] = useState('');
   const iframeRef = React.useRef(null);
@@ -2495,10 +2846,8 @@ function AutomacaoMapaTab({ productionRows = [], mapLabel = '' }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontSize: 10.5, color: C.textDim, lineHeight: 1.5 }}>
-        Sobe o <strong style={{ color: C.text }}>Splice Report</strong> e o <strong style={{ color: C.text }}>PDF do As-Built</strong> — a
-        lista de <strong style={{ color: C.text }}>Produção</strong>{mapLabel ? ` (mapa ${mapLabel})` : ''} já vem direto da aba Produção
-        deste painel (botão "Usar Produção do Painel" dentro da ferramenta), sem precisar exportar/subir planilha à parte.
-        Ela acha a posição certa de cada tag sozinha e grava as caixinhas como anotações reais (editáveis) no PDF, já com conciliação em Excel.
+        {t('Sobe o')} <strong style={{ color: C.text }}>Splice Report</strong> {t('e o')} <strong style={{ color: C.text }}>{t('PDF do As-Built')}</strong> — {t('a lista de')} <strong style={{ color: C.text }}>{t('Produção')}</strong>{mapLabel ? ` (${t('mapa')} ${mapLabel})` : ''} {t('já vem direto da aba Produção deste painel (botão "Usar Produção do Painel" dentro da ferramenta), sem precisar exportar/subir planilha à parte.')}
+        {' '}{t('Ela acha a posição certa de cada tag sozinha e grava as caixinhas como anotações reais (editáveis) no PDF, já com conciliação em Excel.')}
       </div>
       {frameError && (
         <div style={{ background: "rgba(255,82,82,0.1)", border: `1px solid ${C.red}`, color: C.red, padding: 10, borderRadius: 6, fontSize: 11 }}>
@@ -2515,7 +2864,7 @@ function AutomacaoMapaTab({ productionRows = [], mapLabel = '' }) {
             style={{ width: '100%', height: '100%', border: 'none' }}
           />
         ) : (
-          <div style={{ padding: 20, color: C.textDim, fontSize: 11 }}>Carregando ferramenta de automação...</div>
+          <div style={{ padding: 20, color: C.textDim, fontSize: 11 }}>{t('Carregando ferramenta de automação...')}</div>
         )}
       </div>
     </div>
@@ -2549,6 +2898,21 @@ function migrateProjectsList(data) {
 }
 
 function ProductionDashboard() {
+  // ===== IDIOMA DO SITE (PT/EN) — botão no header, salvo no navegador =====
+  const [lang, setLang] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY_LANG) || 'pt'; } catch (e) { return 'pt'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_LANG, lang); } catch (e) {}
+  }, [lang]);
+  const t = (s) => translate(lang, s);
+  useEffect(() => {
+    try {
+      document.title = t('CONTROL PRO — Gestão Semanal por Ciclos & Desempenho');
+      document.documentElement.lang = lang === 'en' ? 'en' : 'pt-BR';
+    } catch (e) {}
+  }, [lang]);
+
   // Carrega do localStorage se existir, senão usa o inicial
   const [projects, setProjects] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -2798,6 +3162,9 @@ function ProductionDashboard() {
   });
   const [driveScanLast, setDriveScanLast] = useState(() => localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '');
   const [onlyDrivePending, setOnlyDrivePending] = useState(false);
+  // Feedback visual rápido (2s) no botão "Atualizar Drive" pra deixar claro que o clique funcionou,
+  // já que ele só recarrega o cache local (não sai buscando nada novo sozinho no Google Drive).
+  const [driveRefreshFlash, setDriveRefreshFlash] = useState(false);
 
   useEffect(() => {
     if (activeTab !== "DASHBOARD") return;
@@ -3051,9 +3418,9 @@ function ProductionDashboard() {
 
   const statusBadge = (st) => {
     switch (st) {
-      case "OK": return <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>PRONTO</span>;
-      case "PENDING_REVISION": return <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>REVISÃO NECESSÁRIA</span>;
-      default: return <span style={{ background: C.panel2, color: C.textDim, border: `1px solid ${C.border2}`, padding: "2px 6px", borderRadius: 4, fontSize: 10 }}>SEM ATUALIZAÇÃO</span>;
+      case "OK": return <span style={{ background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{t('PRONTO')}</span>;
+      case "PENDING_REVISION": return <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{t('REVISÃO NECESSÁRIA')}</span>;
+      default: return <span style={{ background: C.panel2, color: C.textDim, border: `1px solid ${C.border2}`, padding: "2px 6px", borderRadius: 4, fontSize: 10 }}>{t('SEM ATUALIZAÇÃO')}</span>;
     }
   };
 
@@ -4004,6 +4371,7 @@ function ProductionDashboard() {
   };
 
   return (
+    <LangContext.Provider value={{ lang, t }}>
     <div style={{ padding: "0 0 30px 0" }}>
       {/* HEADER */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center", justifyContent: "space-between", background: C.panel, borderBottom: `1px solid ${C.border}`, padding: "14px 20px", marginBottom: 18, position: "sticky", top: 0, zIndex: 60, boxShadow: "0 4px 12px rgba(0,0,0,0.35)" }}>
@@ -4012,7 +4380,25 @@ function ProductionDashboard() {
             <div style={{ fontFamily: FONT_HEAD, fontSize: 19, fontWeight: 800, color: C.accent, letterSpacing: -0.5 }}>
               CONTROL<span style={{ color: C.text }}>PRO</span>
             </div>
-            <div style={{ fontSize: 11, color: C.textDim }}>Gestão Interna (Salvamento Automático No Navegador)</div>
+            <div style={{ fontSize: 11, color: C.textDim }}>{t('Gestão Interna (Salvamento Automático No Navegador)')}</div>
+          </div>
+
+          {/* IDIOMA (PT/EN) */}
+          <div style={{ display: "flex", background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 2 }}>
+            <button
+              onClick={() => setLang('pt')}
+              title="Português"
+              style={{ background: lang === 'pt' ? C.accentSoft : "transparent", color: lang === 'pt' ? C.accent : C.textDim, border: lang === 'pt' ? `1px solid ${C.accent}` : "1px solid transparent", borderRadius: 4, padding: "5px 10px", fontSize: 10.5, fontWeight: 800, cursor: "pointer" }}
+            >
+              PT
+            </button>
+            <button
+              onClick={() => setLang('en')}
+              title="English"
+              style={{ background: lang === 'en' ? C.accentSoft : "transparent", color: lang === 'en' ? C.accent : C.textDim, border: lang === 'en' ? `1px solid ${C.accent}` : "1px solid transparent", borderRadius: 4, padding: "5px 10px", fontSize: 10.5, fontWeight: 800, cursor: "pointer" }}
+            >
+              EN
+            </button>
           </div>
 
           {/* NAVEGAÇÃO ENTRE ABAS */}
@@ -4027,7 +4413,7 @@ function ProductionDashboard() {
                 borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
               }}
             >
-              <TrendingUp size={13} /> DASHBOARD DE CONTROLE
+              <TrendingUp size={13} /> {t('DASHBOARD DE CONTROLE')}
             </button>
             <button
               onClick={() => setActiveTab("PRODUCTION_LIST")}
@@ -4039,7 +4425,7 @@ function ProductionDashboard() {
                 borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
               }}
             >
-              <List size={13} /> ABA PRODUÇÃO & CÓDIGOS AS-BUILT
+              <List size={13} /> {t('ABA PRODUÇÃO & CÓDIGOS AS-BUILT')}
             </button>
             <button
               onClick={() => setActiveTab("AUTOMACAO")}
@@ -4051,7 +4437,7 @@ function ProductionDashboard() {
                 borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
               }}
             >
-              <Wand2 size={13} /> AUTOMAÇÃO (MAPA)
+              <Wand2 size={13} /> {t('AUTOMAÇÃO (MAPA)')}
             </button>
             <button
               onClick={() => setActiveTab("FIBER_CALC")}
@@ -4063,7 +4449,7 @@ function ProductionDashboard() {
                 borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
               }}
             >
-              <List size={13} /> CALCULADORA DE FIBRA
+              <List size={13} /> {t('CALCULADORA DE FIBRA')}
             </button>
             <button
               onClick={() => setActiveTab("PENDINGS")}
@@ -4075,7 +4461,7 @@ function ProductionDashboard() {
                 borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
               }}
             >
-              <CheckCircle size={13} /> PENDINGS (MAPA)
+              <CheckCircle size={13} /> {t('PENDINGS (MAPA)')}
             </button>
             <button
               onClick={() => setActiveTab("REDLINES")}
@@ -4087,7 +4473,7 @@ function ProductionDashboard() {
                 borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
               }}
             >
-              <List size={13} /> REDLINES
+              <List size={13} /> {t('REDLINES')}
             </button>
             <button
               onClick={() => setActiveTab("DRIVE_SCAN")}
@@ -4099,7 +4485,7 @@ function ProductionDashboard() {
                 borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
               }}
             >
-              <CloudIcon size={13} /> SCANNER DRIVE
+              <CloudIcon size={13} /> {t('SCANNER DRIVE')}
             </button>
           </div>
         </div>
@@ -4110,17 +4496,17 @@ function ProductionDashboard() {
             <>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
                 <Calendar size={13} color={C.amber} />
-                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Ciclo:</span>
+                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Ciclo:')}</span>
                 <select value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer" }}>
                   {WEEK_OPTIONS.map((w) => (
-                    <option key={w.id} value={w.id} style={{ background: C.panel }}>{formatWeekLabel(w, weekDateRanges)} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
+                    <option key={w.id} value={w.id} style={{ background: C.panel }}>{formatWeekLabel(w, weekDateRanges)} {w.id === openWeek ? t("(Aberta)") : t("(Fechada)")}</option>
                   ))}
-                  <option value="ALL" style={{ background: C.panel }}>Todos os Ciclos</option>
+                  <option value="ALL" style={{ background: C.panel }}>{t('Todos os Ciclos')}</option>
                 </select>
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(0, 230, 118, 0.08)", border: `1px solid ${C.green}`, borderRadius: 5, padding: "4px 8px" }}>
-                <span style={{ fontSize: 10, color: C.green, fontWeight: 700, textTransform: "uppercase" }}>Semana Aberta (Ativa):</span>
+                <span style={{ fontSize: 10, color: C.green, fontWeight: 700, textTransform: "uppercase" }}>{t('Semana Aberta (Ativa):')}</span>
                 <select value={openWeek} onChange={(e) => setOpenWeek(e.target.value)} style={{ background: "transparent", color: C.green, border: "none", fontSize: 11, outline: "none", fontWeight: 800, cursor: "pointer" }}>
                   {WEEK_OPTIONS.map((w) => (
                     <option key={w.id} value={w.id} style={{ background: C.panel, color: C.text }}>{formatWeekLabel(w, weekDateRanges)}</option>
@@ -4129,19 +4515,19 @@ function ProductionDashboard() {
               </div>
 
               <button onClick={() => setShowWeekDatesModal(true)} title="Definir as datas (De/Até) de cada semana, ex: Semana 1 = 01/08 a 07/08" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-                <Calendar size={13} /> Datas das Semanas
+                <Calendar size={13} /> {t('Datas das Semanas')}
               </button>
 
               <button onClick={handleResetMonth} title="Baixa um .xlsx com tudo do mês, arquiva os itens atuais e reinicia as Semanas 1-4 do zero (use quando virar o mês)" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-                <RotateCcw size={13} /> Novo Mês (Resetar Semanas)
+                <RotateCcw size={13} /> {t('Novo Mês (Resetar Semanas)')}
               </button>
 
               <button onClick={() => setShowArchiveModal(true)} title="Ver meses arquivados" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-                <Archive size={13} /> Histórico {archives.length > 0 ? `(${archives.length})` : ""}
+                <Archive size={13} /> {t('Histórico')} {archives.length > 0 ? `(${archives.length})` : ""}
               </button>
 
               <button onClick={() => { setEditingItem(null); setModalMode("GENERAL"); setShowModal(true); }} style={{ display: "flex", alignItems: "center", gap: 6, background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                <Plus size={14} /> Novo Item
+                <Plus size={14} /> {t('Novo Item')}
               </button>
             </>
           )}
@@ -4150,7 +4536,7 @@ function ProductionDashboard() {
             <>
               {productionDeliveryDayOptions.length > 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", width: "100%", marginBottom: 4 }}>
-                  <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>Entrega:</span>
+                  <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>{t('Entrega:')}</span>
                   <button
                     onClick={() => { setSelectedDeliveryDayProd("ALL"); setSelectedMapProd("ALL"); }}
                     style={{
@@ -4160,8 +4546,8 @@ function ProductionDashboard() {
                       borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
                     }}
                   >
-                    TODOS ({productionList.length})
-                  </button>
+                {t('TODOS')} ({productionList.length})
+              </button>
                   {productionDeliveryDayOptions.map((day) => {
                     const count = productionList.filter(p => mapToDeliveryDay[(p.map || "").trim().toUpperCase()] === day).length;
                     const active = selectedDeliveryDayProd === day;
@@ -4176,7 +4562,7 @@ function ProductionDashboard() {
                           borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
                         }}
                       >
-                        {day} ({count})
+                        {t(day)} ({count})
                       </button>
                     );
                   })}
@@ -4190,16 +4576,16 @@ function ProductionDashboard() {
                       borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
                     }}
                   >
-                    SEM ENTREGA ({productionList.filter(p => !mapToDeliveryDay[(p.map || "").trim().toUpperCase()]).length})
+                    {t('SEM ENTREGA')} ({productionList.filter(p => !mapToDeliveryDay[(p.map || "").trim().toUpperCase()]).length})
                   </button>
                 </div>
               )}
 
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
                 <List size={13} color={C.green} />
-                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Mapa:</span>
+                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Mapa:')}</span>
                 <select value={selectedMapProd} onChange={(e) => setSelectedMapProd(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer", maxWidth: 200 }}>
-                  <option value="ALL" style={{ background: C.panel }}>Todos os Mapas ({productionByDay.length})</option>
+                  <option value="ALL" style={{ background: C.panel }}>{t('Todos os Mapas')} ({productionByDay.length})</option>
                   {availableMapsForSelectedDay.map(({ map, count }) => (
                     <option key={map} value={map} style={{ background: C.panel }}>{map} ({count})</option>
                   ))}
@@ -4209,41 +4595,41 @@ function ProductionDashboard() {
               {selectedMapProd !== "ALL" && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "4px 8px" }}>
                   <Calendar size={13} color={C.accent} />
-                  <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>Entrega deste mapa:</span>
+                  <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Entrega deste mapa:')}</span>
                   <select
                     value={mapToDeliveryDay[selectedMapProd.trim().toUpperCase()] || ""}
                     onChange={(e) => setMapDeliveryDay(selectedMapProd, e.target.value)}
                     title="Define o dia de entrega deste mapa (usado nas abas Entrega aqui e no Dashboard)"
                     style={{ background: "transparent", color: C.accent, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer" }}
                   >
-                    <option value="" style={{ background: C.panel, color: C.textDim }}>— Sem entrega definida —</option>
-                    <option value="SEGUNDA" style={{ background: C.panel }}>SEGUNDA</option>
-                    <option value="QUARTA" style={{ background: C.panel }}>QUARTA</option>
-                    <option value="QUINTA" style={{ background: C.panel }}>QUINTA</option>
-                    <option value="SEXTA" style={{ background: C.panel }}>SEXTA</option>
+                    <option value="" style={{ background: C.panel, color: C.textDim }}>{t('— Sem entrega definida —')}</option>
+                    <option value="SEGUNDA" style={{ background: C.panel }}>{t('SEGUNDA')}</option>
+                    <option value="QUARTA" style={{ background: C.panel }}>{t('QUARTA')}</option>
+                    <option value="QUINTA" style={{ background: C.panel }}>{t('QUINTA')}</option>
+                    <option value="SEXTA" style={{ background: C.panel }}>{t('SEXTA')}</option>
                   </select>
                 </div>
               )}
 
               <button onClick={exportProdXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.purple, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
-                <Download size={14} /> Exportar {selectedMapProd === "ALL" ? "Tudo" : "Mapa Atual"} (.XLSX Colorido)
+                <Download size={14} /> {t('Exportar')} {selectedMapProd === "ALL" ? t('Tudo') : t('Mapa Atual')} {t('(.XLSX Colorido)')}
               </button>
               <button onClick={() => setShowPasteImportModal(true)} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                <ClipboardPaste size={14} /> Colar do Excel
+                <ClipboardPaste size={14} /> {t('Colar do Excel')}
               </button>
               <button onClick={() => { setEditingProd(null); setShowProdModal(true); }} style={{ display: "flex", alignItems: "center", gap: 6, background: C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
-                <Plus size={14} /> Novo Registro de Produção
+                <Plus size={14} /> {t('Novo Registro de Produção')}
               </button>
               <button
                 onClick={() => { const id = window.prompt('Código do novo campo (ex: AS19):'); if (id && addCustomCodeField(id)) alert(`Código "${id.trim().toUpperCase()}" adicionado! Já aparece na tabela, no cadastro e na exportação.`); }}
                 title="Cadastra um código novo (ex: um código que surgiu e ainda não existe na lista, como AS19) — passa a valer em toda a aba Produção"
                 style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: "#a2e048", border: "1px dashed #a2e048", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
               >
-                <Plus size={14} /> Novo Código
+                <Plus size={14} /> {t('Novo Código')}
               </button>
               {selectedMapProd !== "ALL" && (
                 <button onClick={handleDeleteCurrentMapProd} title={`Apaga todos os registros do mapa ${selectedMapProd}`} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                  <RotateCcw size={13} /> Limpar Mapa
+                  <RotateCcw size={13} /> {t('Limpar Mapa')}
                 </button>
               )}
             </>
@@ -4265,27 +4651,27 @@ function ProductionDashboard() {
 
       {activeTab === "PRODUCTION_LIST" && (
         <div style={{ padding: "20px" }}>
-          <Panel title={`LISTA DE PRODUÇÃO COM FORMATO AUTOMÁTICO DE AS-BUILT ${selectedMapProd === "ALL" ? "— TODOS OS MAPAS" : `— MAPA ${selectedMapProd}`}`} right={
+          <Panel title={`${t('LISTA DE PRODUÇÃO COM FORMATO AUTOMÁTICO DE AS-BUILT')} ${selectedMapProd === "ALL" ? t('— TODOS OS MAPAS') : `${t('— MAPA')} ${selectedMapProd}`}`} right={
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
-                <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700 }}>DE</span>
+                <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700 }}>{t('DE')}</span>
                 <input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none" }} />
-                <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700 }}>ATÉ</span>
+                <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700 }}>{t('ATÉ')}</span>
                 <input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none" }} />
                 <button onClick={selectByDateRange} title="Marca automaticamente as linhas visíveis dentro desse período" style={{ background: C.accentSoft, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 4, padding: "4px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-                  Selecionar Período
+                  {t('Selecionar Período')}
                 </button>
               </div>
               {selectedProdIds.size > 0 && (
                 <button onClick={clearProdSelection} style={{ display: "flex", alignItems: "center", gap: 4, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "6px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-                  <X size={11} /> Limpar Seleção ({selectedProdIds.size})
+                  <X size={11} /> {t('Limpar Seleção')} ({selectedProdIds.size})
                 </button>
               )}
               <div style={{ display: "flex", alignItems: "center", gap: 4, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: 3 }}>
                 {[
-                  { id: "ALL", label: "Todos" },
-                  { id: "PENDING", label: "Pendentes" },
-                  { id: "DONE", label: "Feitos" },
+                  { id: "ALL", label: t('Todos') },
+                  { id: "PENDING", label: t('Pendentes') },
+                  { id: "DONE", label: t('Feitos') },
                 ].map((f) => {
                   const active = prodDoneFilter === f.id;
                   return (
@@ -4306,15 +4692,15 @@ function ProductionDashboard() {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
                 <Search size={12} color={C.textFaint} />
-                <input placeholder="Buscar na produção..." value={searchProd} onChange={(e) => setSearchProd(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 160 }} />
+                <input placeholder={t('Buscar na produção...')} value={searchProd} onChange={(e) => setSearchProd(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 160 }} />
               </div>
             </div>
           }>
             <div style={{ fontSize: 10.5, color: C.textDim, lineHeight: 1.5, marginBottom: 10 }}>
-              💡 Clique em <strong style={{ color: C.accent }}>"Copiar"</strong> na coluna ASBUILT (GERADO) e depois vá na aba <strong style={{ color: C.purple }}>Automação</strong>, clique em "Adicionar Caixa Manual", clique no ponto do mapa e cole (Ctrl+V) — sem precisar de IA nem chave de API.
+              {t('💡 Clique em "Copiar" na coluna ASBUILT (GERADO) e depois vá na aba Automação, clique em "Adicionar Caixa Manual", clique no ponto do mapa e cole (Ctrl+V) — sem precisar de IA nem chave de API.')}
               {selectedProdIds.size > 0 && (
                 <span style={{ display: "block", marginTop: 4, color: C.accent, fontWeight: 700 }}>
-                  ✓ {selectedProdIds.size} linha(s) marcada(s) — o Invoice/Totais abaixo estão somando só essas linhas.
+                  ✓ {selectedProdIds.size} {t('linha(s) marcada(s) — o Invoice/Totais abaixo estão somando só essas linhas.')}
                 </span>
               )}
             </div>
@@ -4329,17 +4715,17 @@ function ProductionDashboard() {
               }}>
                 <div>
                   <div style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 3 }}>
-                    Entrega {formatDateBR(periodProdStats.from)} até {formatDateBR(periodProdStats.to)}
+                    {t('Entrega')} {formatDateBR(periodProdStats.from)} {t('até')} {formatDateBR(periodProdStats.to)}
                   </div>
                   <div style={{ fontSize: 20, fontWeight: 800, color: periodProdStats.pending > 0 ? C.red : C.green }}>
-                    {periodProdStats.pending > 0 ? `${periodProdStats.pending} a fazer` : "Tudo entregue!"}
+                    {periodProdStats.pending > 0 ? `${periodProdStats.pending} ${t('a fazer')}` : t('Tudo entregue!')}
                   </div>
                 </div>
                 <div style={{ flex: 1, minWidth: 160, maxWidth: 320 }}>
                   <div style={{ height: 9, background: C.border2, borderRadius: 5, overflow: "hidden" }}>
                     <div style={{ width: `${periodProdStats.total > 0 ? Math.round((periodProdStats.done / periodProdStats.total) * 100) : 0}%`, height: "100%", background: C.green, transition: "width 0.4s ease" }} />
                   </div>
-                  <div style={{ fontSize: 10, color: C.textDim, marginTop: 4 }}>{periodProdStats.done} feitos de {periodProdStats.total} no período ({periodProdStats.total > 0 ? Math.round((periodProdStats.done / periodProdStats.total) * 100) : 0}%)</div>
+                  <div style={{ fontSize: 10, color: C.textDim, marginTop: 4 }}>{periodProdStats.done} {t('feitos de')} {periodProdStats.total} {t('no período')} ({periodProdStats.total > 0 ? Math.round((periodProdStats.done / periodProdStats.total) * 100) : 0}%)</div>
                 </div>
               </div>
             )}
@@ -4354,7 +4740,7 @@ function ProductionDashboard() {
                       <div style={{ width: `${d.total > 0 ? Math.round((d.done / d.total) * 100) : 0}%`, height: "100%", background: C.green }} />
                     </div>
                     <span style={{ fontSize: 10, fontWeight: 700, color: d.pending > 0 ? C.red : C.green }}>
-                      {d.pending > 0 ? `${d.pending} a fazer` : "concluído"}
+                      {d.pending > 0 ? `${d.pending} ${t('a fazer')}` : t('concluído')}
                     </span>
                     <span style={{ fontSize: 9, color: C.textFaint }}>({d.done}/{d.total})</span>
                   </div>
@@ -4367,14 +4753,14 @@ function ProductionDashboard() {
                   {/* TOTAIS DO CÓDIGO NO TOPO */}
                   <tr style={{ background: "rgba(0, 212, 255, 0.15)", color: C.accent, fontWeight: 800, textAlign: "center" }}>
                     <td colSpan="11" style={{ padding: "8px", textAlign: "right", letterSpacing: 1 }}>
-                      TOTAIS {selectedProdIds.size > 0 ? `(${selectedProdIds.size} LINHA(S) SELECIONADA(S))` : (selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`)} --&gt;
+                      {t('TOTAIS')} {selectedProdIds.size > 0 ? `(${selectedProdIds.size} ${t('LINHA(S) SELECIONADA(S)')})` : (selectedMapProd === "ALL" ? t('(TODOS OS MAPAS)') : `(${t('MAPA')} ${selectedMapProd})`)} --&gt;
                     </td>
                     {allCodeFields.map(f => (
                       <td key={f.id} style={{ padding: "8px", border: `1px solid ${C.border2}`, color: C.amber }}>
                         {codeTotals[f.id] || 0}
                       </td>
                     ))}
-                    <td style={{ padding: "8px", background: C.panel2, color: C.textDim, fontSize: 10 }}>AUTOMÁTICO</td>
+                    <td style={{ padding: "8px", background: C.panel2, color: C.textDim, fontSize: 10 }}>{t('AUTOMÁTICO')}</td>
                     <td style={{ padding: "8px", background: C.panel2 }}></td>
                   </tr>
 
@@ -4383,7 +4769,7 @@ function ProductionDashboard() {
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>
                       <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} title="Selecionar/desmarcar todas as linhas visíveis" style={{ cursor: "pointer" }} />
                     </th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.greenSoft, color: C.green }} title="Marcar como já produzido/concluído">FEITO</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.greenSoft, color: C.green }} title="Marcar como já produzido/concluído">{t('FEITO')}</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DAILY</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
@@ -4401,9 +4787,9 @@ function ProductionDashboard() {
                     ))}
 
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#182a3a", color: C.accent, fontWeight: 800 }}>
-                      ASBUILT (GERADO)
+                      {t('ASBUILT (GERADO)')}
                     </th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>AÇÕES</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>{t('AÇÕES')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4451,7 +4837,7 @@ function ProductionDashboard() {
                                   borderRadius: 4, padding: "3px 7px", fontSize: 9.5, fontWeight: 700, cursor: "pointer"
                                 }}
                               >
-                                <Copy size={10} /> {copiedRowId === item.id ? "Copiado!" : "Copiar"}
+                                <Copy size={10} /> {copiedRowId === item.id ? t('Copiado!') : t('Copiar')}
                               </button>
                             )}
                           </div>
@@ -4481,7 +4867,7 @@ function ProductionDashboard() {
             }
           >
             <div style={{ fontSize: 10.5, color: C.textDim, marginBottom: 12 }}>
-              💡 Ajuste o preço (<strong style={{ color: C.accent }}>PRICE</strong>) de cada código abaixo — o subtotal é calculado sozinho (TOTAL × PRICE) e fica salvo/sincronizado com a equipe.
+              {t('💡 Ajuste o preço (')}<strong style={{ color: C.accent }}>PRICE</strong>{t(') de cada código abaixo — o subtotal é calculado sozinho (TOTAL × PRICE) e fica salvo/sincronizado com a equipe.')}
             </div>
             <div style={{ overflowX: "auto" }} onWheel={handleHorizontalWheelScroll}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, whiteSpace: "nowrap" }}>
@@ -4648,7 +5034,7 @@ function ProductionDashboard() {
                 {perfCollaborators.length > 0 ? perfCollaborators.map(c => (
                   <CollaboratorCard key={c.name} c={c} />
                 )) : (
-                  <div style={{ color: C.textDim, fontSize: 11 }}>Nenhum colaborador com atualizações registradas neste ciclo.</div>
+                  <div style={{ color: C.textDim, fontSize: 11 }}>{t('Nenhum colaborador com atualizações registradas neste ciclo.')}</div>
                 )}
               </div>
             </Panel>
@@ -4675,45 +5061,45 @@ function ProductionDashboard() {
                   ))}
                 </div>
               ) : (
-                <div style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>Excelente! Nenhuma atualização pendente ou em atraso.</div>
+                <div style={{ color: C.green, fontSize: 11, fontWeight: 700 }}>{t('Excelente! Nenhuma atualização pendente ou em atraso.')}</div>
               )}
             </Panel>
           )}
 
         {/* KPIS DE RESUMO DA OPERAÇÃO */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18, marginTop: 18 }}>
-          <Panel title="Total OTs Pendentes no Ciclo" icon={<AlertTriangle size={13} color={C.red} />}>
-            <StatRow label="OTs a Fazer" value={kpis.totalOTs} valueColor={kpis.totalOTs > 0 ? C.red : C.green} />
-            <StatRow label="Prioridade Máxima" value={filteredAndSorted[0]?.otCount > 0 ? `${filteredAndSorted[0].map} (${filteredAndSorted[0].otCount} OTs)` : "Nenhuma"} valueColor={C.amber} />
+          <Panel title={t('Total OTs Pendentes no Ciclo')} icon={<AlertTriangle size={13} color={C.red} />}>
+            <StatRow label={t('OTs a Fazer')} value={kpis.totalOTs} valueColor={kpis.totalOTs > 0 ? C.red : C.green} />
+            <StatRow label={t('Prioridade Máxima')} value={filteredAndSorted[0]?.otCount > 0 ? `${filteredAndSorted[0].map} (${filteredAndSorted[0].otCount} OTs)` : t('Nenhuma')} valueColor={C.amber} />
             {kpis.totalOTsFromProduction !== kpis.totalOTs && (
               <div style={{ fontSize: 9, color: C.textFaint, marginTop: 6, lineHeight: 1.4 }}>
-                📋 Pela Produção (linhas não FEITO dos mapas deste ciclo): <strong style={{ color: C.amber }}>{kpis.totalOTsFromProduction}</strong>. Ajuste o saldo no cadastro de cada mapa se quiser igualar.
+                {t('📋 Pela Produção (linhas não FEITO dos mapas deste ciclo):')} <strong style={{ color: C.amber }}>{kpis.totalOTsFromProduction}</strong>. {t('Ajuste o saldo no cadastro de cada mapa se quiser igualar.')}
               </div>
             )}
           </Panel>
-          <Panel title="Status As-Built" icon={<CheckCircle size={13} color={C.green} />}>
-            <StatRow label="Prontos no Ciclo" value={kpis.ok} valueColor={C.green} />
-            <StatRow label="Pendentes / Revisão" value={kpis.pending} valueColor={kpis.pending > 0 ? C.red : C.textDim} />
+          <Panel title={t('Status As-Built')} icon={<CheckCircle size={13} color={C.green} />}>
+            <StatRow label={t('Prontos no Ciclo')} value={kpis.ok} valueColor={C.green} />
+            <StatRow label={t('Pendentes / Revisão')} value={kpis.pending} valueColor={kpis.pending > 0 ? C.red : C.textDim} />
           </Panel>
-          <Panel title="Validação Invoices" icon={<FileSpreadsheet size={13} color={C.green} />}>
-            <StatRow label="Invoices Atualizadas" value={`${kpis.invoiceUpdated} / ${kpis.total}`} valueColor={C.green} />
-            <StatRow label="Invoices Pendentes" value={kpis.total - kpis.invoiceUpdated} valueColor={C.amber} />
+          <Panel title={t('Validação Invoices')} icon={<FileSpreadsheet size={13} color={C.green} />}>
+            <StatRow label={t('Invoices Atualizadas')} value={`${kpis.invoiceUpdated} / ${kpis.total}`} valueColor={C.green} />
+            <StatRow label={t('Invoices Pendentes')} value={kpis.total - kpis.invoiceUpdated} valueColor={C.amber} />
           </Panel>
-          <Panel title="Validação Workbooks" icon={<FileSpreadsheet size={13} color={C.purple} />}>
-            <StatRow label="Workbooks Atualizados" value={`${kpis.workbookUpdated} / ${kpis.total}`} valueColor={C.purple} />
-            <StatRow label="Workbooks Pendentes" value={kpis.total - kpis.workbookUpdated} valueColor={C.amber} />
+          <Panel title={t('Validação Workbooks')} icon={<FileSpreadsheet size={13} color={C.purple} />}>
+            <StatRow label={t('Workbooks Atualizados')} value={`${kpis.workbookUpdated} / ${kpis.total}`} valueColor={C.purple} />
+            <StatRow label={t('Workbooks Pendentes')} value={kpis.total - kpis.workbookUpdated} valueColor={C.amber} />
           </Panel>
         </div>
         </div>
         </div>
 
         {/* PROGRESSO DO DIA DE ENTREGA (AS-BUILT / INVOICE / WORKBOOK) */}
-        <Panel title="PROGRESSO POR DIA DE ENTREGA" style={{ marginBottom: 18 }}>
+        <Panel title={t('PROGRESSO POR DIA DE ENTREGA')} style={{ marginBottom: 18 }}>
 
           {/* ABAS POR DIA DE ENTREGA (sincronizadas com o Controle Geral) */}
           {deliveryDayOptions.length > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-              <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>Entrega:</span>
+              <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>{t('Entrega:')}</span>
               <button
                 onClick={() => setSelectedDeliveryDay("ALL")}
                 style={{
@@ -4723,7 +5109,7 @@ function ProductionDashboard() {
                   borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
                 }}
               >
-                TODOS ({otQueueItems.length})
+                {t('TODOS')} ({otQueueItems.length})
               </button>
               {deliveryDayOptions.map((day) => {
                 const count = otQueueItems.filter((p) => (p.deliveryDay || "").trim().toUpperCase() === day).length;
@@ -4739,7 +5125,7 @@ function ProductionDashboard() {
                       borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
                     }}
                   >
-                    {day} ({count})
+                    {t(day)} ({count})
                   </button>
                 );
               })}
@@ -4750,9 +5136,9 @@ function ProductionDashboard() {
           {queueStageStats.total > 0 && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
               {[
-                { label: "AS-BUILT", data: queueStageStats.asbuilt, color: C.accent },
-                { label: "INVOICE", data: queueStageStats.invoice, color: C.green },
-                { label: "WORKBOOK", data: queueStageStats.workbook, color: C.purple },
+                { label: t('AS-BUILT'), data: queueStageStats.asbuilt, color: C.accent },
+                { label: t('INVOICE'), data: queueStageStats.invoice, color: C.green },
+                { label: t('WORKBOOK'), data: queueStageStats.workbook, color: C.purple },
               ].map((s) => (
                 <div key={s.label} style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "10px 12px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
@@ -4762,52 +5148,60 @@ function ProductionDashboard() {
                   <div style={{ height: 7, background: C.border2, borderRadius: 4, overflow: "hidden" }}>
                     <div style={{ width: `${s.data.pct}%`, height: "100%", background: s.color, transition: "width 0.4s ease" }} />
                   </div>
-                  <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 4 }}>{s.data.done} / {queueStageStats.total} mapas do dia atualizados</div>
+                  <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 4 }}>{s.data.done} / {queueStageStats.total} {t('mapas do dia atualizados')}</div>
                 </div>
               ))}
             </div>
           )}
 
           <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 14 }}>
-            Pra atualizar um mapa, use a tabela "Controle Geral" logo abaixo — clique no lápis ✎ na coluna Ações pra abrir o cadastro completo (AS-BUILT, Invoice e Workbook).
+            {t('Pra atualizar um mapa, use a tabela "Controle Geral" logo abaixo — clique no lápis ✎ na coluna Ações pra abrir o cadastro completo (AS-BUILT, Invoice e Workbook).')}
           </div>
         </Panel>
 
         {/* TABELA 2: CONTROLE GERAL */}
         <Panel
-          title="CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO"
+          title={t('CONTROLE GERAL DE PRODUÇÃO E DOCUMENTAÇÃO')}
           right={
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button onClick={handleCopyToNextWeek} title="Copia os mapas marcados (ou todos os visíveis, se nenhum estiver marcado) para a semana seguinte, já zerados como PENDENTE" style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(179,136,255,0.12)", color: C.purple, border: `1px solid ${C.purple}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-                <Copy size={12} /> Copiar {selectedGeneralIds.size > 0 ? `(${selectedGeneralIds.size})` : "Todos"} p/ Próxima Semana
+                <Copy size={12} /> {t('Copiar')} {selectedGeneralIds.size > 0 ? `(${selectedGeneralIds.size})` : t('Todos')} {t('p/ Próxima Semana')}
               </button>
               <button onClick={exportGeneralXLSX} style={{ display: "flex", alignItems: "center", gap: 6, background: C.greenSoft, color: C.green, border: `1px solid ${C.green}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
-                <Download size={12} /> Exportar XLSX
+                <Download size={12} /> {t('Exportar XLSX')}
               </button>
-              <button
-                onClick={() => {
-                  try { setDriveScanResults(JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_RESULTS) || 'null') || []); } catch (e) {}
-                  setDriveScanLast(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '');
-                }}
-                title="Recarrega a situação do Drive a partir da última varredura salva (feita na aba Scanner Drive)"
-                style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
-              >
-                <RotateCcw size={12} /> Atualizar Drive
-              </button>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                <button
+                  onClick={() => {
+                    try { setDriveScanResults(JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_RESULTS) || 'null') || []); } catch (e) {}
+                    const last = localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '';
+                    setDriveScanLast(last);
+                    setDriveRefreshFlash(true);
+                    setTimeout(() => setDriveRefreshFlash(false), 2000);
+                  }}
+                  title="Recarrega a situação do Drive a partir da última varredura salva (feita na aba Scanner Drive) — não faz uma varredura nova sozinho"
+                  style={{ display: "flex", alignItems: "center", gap: 6, background: driveRefreshFlash ? C.greenSoft : "transparent", color: driveRefreshFlash ? C.green : C.accent, border: `1px solid ${driveRefreshFlash ? C.green : C.accent}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", transition: "background 0.2s, color 0.2s" }}
+                >
+                  {driveRefreshFlash ? <CheckCircle size={12} /> : <RotateCcw size={12} />} {driveRefreshFlash ? t('Atualizado!') : t('Atualizar Drive')}
+                </button>
+                <span style={{ fontSize: 8.5, color: C.textFaint, paddingLeft: 2 }}>
+                  {driveScanLast ? `${t('Última varredura: ')}${new Date(driveScanLast).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR')}` : t('Nenhuma varredura salva ainda — rode uma na aba Scanner Drive.')}
+                </span>
+              </div>
               <button
                 onClick={() => setActiveTab("DRIVE_SCAN")}
                 title="Ir para a aba Scanner Drive pra rodar uma nova varredura"
                 style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
               >
-                Escanear Drive
+                {t('Escanear Drive')}
               </button>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: C.textDim, cursor: "pointer", userSelect: "none" }} title="Mostra só os mapas que a última varredura do Drive encontrou com linhas pendentes">
                 <input type="checkbox" checked={onlyDrivePending} onChange={(e) => setOnlyDrivePending(e.target.checked)} style={{ cursor: "pointer" }} />
-                Só com pendência no Drive
+                {t('Só com pendência no Drive')}
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 10px" }}>
                 <Search size={12} color={C.textFaint} />
-                <input placeholder="Buscar por mapa, técnico..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 180 }} />
+                <input placeholder={t('Buscar por mapa, técnico...')} value={search} onChange={(e) => setSearch(e.target.value)} style={{ background: "transparent", border: "none", color: C.text, fontSize: 11, outline: "none", width: 180 }} />
               </div>
             </div>
           }
@@ -4815,7 +5209,7 @@ function ProductionDashboard() {
           {/* ABAS POR DIA DE ENTREGA */}
           {deliveryDayOptions.length > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-              <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>Entrega:</span>
+              <span style={{ fontSize: 9.5, color: C.textFaint, fontWeight: 700, textTransform: "uppercase", marginRight: 2 }}>{t('Entrega:')}</span>
               <button
                 onClick={() => setSelectedDeliveryDay("ALL")}
                 style={{
@@ -4825,7 +5219,7 @@ function ProductionDashboard() {
                   borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
                 }}
               >
-                TODOS ({filteredAndSorted.length})
+                {t('TODOS')} ({filteredAndSorted.length})
               </button>
               {deliveryDayOptions.map((day) => {
                 const count = filteredAndSorted.filter((p) => (p.deliveryDay || "").trim().toUpperCase() === day).length;
@@ -4841,7 +5235,7 @@ function ProductionDashboard() {
                       borderRadius: 5, padding: "5px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer"
                     }}
                   >
-                    {day} ({count})
+                    {t(day)} ({count})
                   </button>
                 );
               })}
@@ -4854,18 +5248,18 @@ function ProductionDashboard() {
                   <th style={{ padding: "8px 6px", width: 28 }}>
                     <input type="checkbox" checked={allGeneralVisibleSelected} onChange={toggleSelectAllGeneralVisible} title="Selecionar/desmarcar todos os mapas visíveis" style={{ cursor: "pointer" }} />
                   </th>
-                  <th style={{ padding: "8px 6px" }}>ENTREGA</th>
-                  <th style={{ padding: "8px 6px" }}>MAPA / CÓDIGO</th>
-                  <th style={{ padding: "8px 6px" }}>SITUAÇÃO (DRIVE)</th>
-                  <th style={{ padding: "8px 6px" }}>MODIFICADO (DRIVE)</th>
-                  <th style={{ padding: "8px 6px" }}>OTS PENDENTES</th>
-                  <th style={{ padding: "8px 6px" }}>CICLO (SÁB-SEX)</th>
-                  <th style={{ padding: "8px 6px" }}>AS-BUILT</th>
-                  <th style={{ padding: "8px 6px" }}>INVOICE</th>
-                  <th style={{ padding: "8px 6px" }}>WORKBOOK</th>
-                  <th style={{ padding: "8px 6px" }}>STATUS GERAL</th>
-                  <th style={{ padding: "8px 6px" }}>OBSERVAÇÕES</th>
-                  <th style={{ padding: "8px 6px", textAlign: "center" }}>AÇÕES</th>
+                  <th style={{ padding: "8px 6px" }}>{t('ENTREGA')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('MAPA / CÓDIGO')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('SITUAÇÃO (DRIVE)')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('MODIFICADO (DRIVE)')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('OTS PENDENTES')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('CICLO (SÁB-SEX)')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('AS-BUILT')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('INVOICE')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('WORKBOOK')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('STATUS GERAL')}</th>
+                  <th style={{ padding: "8px 6px" }}>{t('OBSERVAÇÕES')}</th>
+                  <th style={{ padding: "8px 6px", textAlign: "center" }}>{t('AÇÕES')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -4884,25 +5278,25 @@ function ProductionDashboard() {
                       {!dr ? (
                         <span style={{ color: C.textFaint, fontSize: 10 }}>—</span>
                       ) : dr.error ? (
-                        <span style={{ color: C.textFaint, fontSize: 10 }}>Erro na leitura</span>
+                        <span style={{ color: C.textFaint, fontSize: 10 }}>{t('Erro na leitura')}</span>
                       ) : (dr.pendingCount || 0) === 0 ? (
-                        <span style={{ color: C.green, fontWeight: 700, fontSize: 10 }}>EM DIA</span>
+                        <span style={{ color: C.green, fontWeight: 700, fontSize: 10 }}>{t('EM DIA')}</span>
                       ) : (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                          <span style={{ color: C.red, fontWeight: 800, fontSize: 10 }}>{dr.pendingCount} linha(s) pendente(s)</span>
+                          <span style={{ color: C.red, fontWeight: 800, fontSize: 10 }}>{dr.pendingCount} {t('linha(s) pendente(s)')}</span>
                           {dr.usedDateFallback && (
-                            <span style={{ fontSize: 8.5, fontWeight: 800, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 4px" }}>POR DATA</span>
+                            <span style={{ fontSize: 8.5, fontWeight: 800, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 4px" }}>{t('POR DATA')}</span>
                           )}
                         </span>
                       )}
                     </td>
                     <td style={{ padding: "8px 6px", fontSize: 10, color: C.textDim }}>
-                      {dr && dr.modifiedTime ? new Date(dr.modifiedTime).toLocaleString("pt-BR") : "—"}
+                      {dr && dr.modifiedTime ? new Date(dr.modifiedTime).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR') : "—"}
                     </td>
                     <td style={{ padding: "8px 6px" }}>
                       {item.otCount > 0 ? (
-                        <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontWeight: 800, fontSize: 10 }}>{item.otCount} OT(s)</span>
-                      ) : <span style={{ color: C.textFaint, fontSize: 10 }}>0 (Zerado)</span>}
+                        <span style={{ background: C.redSoft, color: C.red, border: `1px solid ${C.red}`, padding: "2px 6px", borderRadius: 4, fontWeight: 800, fontSize: 10 }}>{item.otCount} {t('OT(s)')}</span>
+                      ) : <span style={{ color: C.textFaint, fontSize: 10 }}>0 {t('(Zerado)')}</span>}
                     </td>
 
                     <td style={{ padding: "8px 6px" }}>
@@ -4935,7 +5329,7 @@ function ProductionDashboard() {
                   );
                 }) : (
                   <tr>
-                    <td colSpan="13" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>Nenhum item encontrado{selectedDeliveryDay !== "ALL" ? ` para a entrega de ${selectedDeliveryDay}` : ""}.</td>
+                    <td colSpan="13" style={{ padding: 16, textAlign: "center", color: C.textFaint }}>{t('Nenhum item encontrado')}{selectedDeliveryDay !== "ALL" ? ` ${t('para a entrega de')} ${selectedDeliveryDay}` : ""}.</td>
                   </tr>
                 )}
               </tbody>
@@ -4964,7 +5358,7 @@ function ProductionDashboard() {
           <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 560, maxHeight: "85vh", overflowY: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
               <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent, display: "flex", alignItems: "center", gap: 8 }}>
-                <Archive size={16} /> Histórico de Meses Arquivados
+                <Archive size={16} /> {t('Histórico de Meses Arquivados')}
               </div>
               <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={() => setShowArchiveModal(false)} />
             </div>
@@ -4973,7 +5367,7 @@ function ProductionDashboard() {
             </div>
 
             {archives.length === 0 ? (
-              <div style={{ textAlign: "center", color: C.textFaint, fontSize: 11, padding: 24 }}>Nenhum mês arquivado ainda.</div>
+              <div style={{ textAlign: "center", color: C.textFaint, fontSize: 11, padding: 24 }}>{t('Nenhum mês arquivado ainda.')}</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {archives.map((arch) => (
@@ -5036,12 +5430,13 @@ function ProductionDashboard() {
               })}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
-              <button onClick={() => setShowWeekDatesModal(false)} style={{ background: C.green, border: "none", color: "#000", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Concluído</button>
+              <button onClick={() => setShowWeekDatesModal(false)} style={{ background: C.green, border: "none", color: "#000", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Concluído')}</button>
             </div>
           </div>
         </div>
       )}
     </div>
+    </LangContext.Provider>
   );
 }
 
@@ -5128,6 +5523,7 @@ function parsePastedProductionRows(text) {
 }
 
 function PasteImportModal({ onClose, onImport }) {
+  const { t } = useLang();
   const [text, setText] = useState('');
   const rows = useMemo(() => parsePastedProductionRows(text), [text]);
 
@@ -5135,26 +5531,26 @@ function PasteImportModal({ onClose, onImport }) {
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}>
       <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 740, maxHeight: "90vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
-          <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>Colar Dados do Excel</div>
+          <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>{t('Colar Dados do Excel')}</div>
           <X size={16} color={C.textDim} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
 
         <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
-          Copia (Ctrl+C) as colunas <strong style={{ color: C.text }}>DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE</strong> direto do Excel/Google Sheets — e se quiser, inclui também as colunas de código (<strong style={{ color: C.text }}>US01, FS01, FS02...</strong>) que elas são preenchidas sozinhas.
-          Se você copiar junto a linha de cabeçalho (com os nomes das colunas), o sistema usa ela pra saber qual coluna é qual código, então funciona mesmo se a ordem for diferente da do sistema.
-          Sem cabeçalho, ele assume a ordem padrão dos códigos. Linhas sem data válida (cabeçalho perdido, "END INVOICE" etc.) são ignoradas automaticamente.
+          {t('Copia (Ctrl+C) as colunas')} <strong style={{ color: C.text }}>DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE</strong> {t('direto do Excel/Google Sheets — e se quiser, inclui também as colunas de código')} (<strong style={{ color: C.text }}>US01, FS01, FS02...</strong>) {t('que elas são preenchidas sozinhas.')}
+          {' '}{t('Se você copiar junto a linha de cabeçalho (com os nomes das colunas), o sistema usa ela pra saber qual coluna é qual código, então funciona mesmo se a ordem for diferente da do sistema.')}
+          {' '}{t('Sem cabeçalho, ele assume a ordem padrão dos códigos. Linhas sem data válida (cabeçalho perdido, "END INVOICE" etc.) são ignoradas automaticamente.')}
         </div>
 
         <textarea
           autoFocus
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"Cole aqui as linhas copiadas do Excel...\nEx: 08/03/26    JS98E    SE 025    3    ODAIR GOMES    AERIAL    RING CUT"}
+          placeholder={t('Cole aqui as linhas copiadas do Excel...') + "\nEx: 08/03/26    JS98E    SE 025    3    ODAIR GOMES    AERIAL    RING CUT"}
           style={{ width: "100%", minHeight: 160, background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 10, fontSize: 11, fontFamily: "'JetBrains Mono', monospace", outline: "none", resize: "vertical", boxSizing: "border-box" }}
         />
 
         <div style={{ fontSize: 11, fontWeight: 700, color: rows.length > 0 ? C.green : C.textFaint }}>
-          {rows.length > 0 ? `✓ ${rows.length} linha(s) detectada(s) e prontas pra importar.` : "Nenhuma linha válida detectada ainda — cola os dados acima."}
+          {rows.length > 0 ? `✓ ${rows.length} ${t('linha(s) detectada(s) e prontas pra importar.')}` : t('Nenhuma linha válida detectada ainda — cola os dados acima.')}
         </div>
 
         {rows.length > 0 && (
@@ -5162,7 +5558,7 @@ function PasteImportModal({ onClose, onImport }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
               <thead>
                 <tr style={{ background: C.panel2 }}>
-                  {["DATA", "MAPA", "LOCAL", "SPLICE", "NOME", "TYPE", "TYPE", "CÓDIGOS"].map((h) => (
+                  {[t('DATA'), t('MAPA'), t('LOCAL'), 'SPLICE', t('NOME'), 'TYPE', 'TYPE', t('CÓDIGOS')].map((h) => (
                     <th key={h} style={{ padding: "6px 8px", textAlign: "left", color: C.textDim, borderBottom: `1px solid ${C.border2}`, position: "sticky", top: 0, background: C.panel2 }}>{h}</th>
                   ))}
                 </tr>
@@ -5187,18 +5583,18 @@ function PasteImportModal({ onClose, onImport }) {
                 })}
               </tbody>
             </table>
-            {rows.length > 50 && <div style={{ padding: 8, fontSize: 10, color: C.textFaint, textAlign: "center" }}>+ {rows.length - 50} linha(s) a mais...</div>}
+            {rows.length > 50 && <div style={{ padding: 8, fontSize: 10, color: C.textFaint, textAlign: "center" }}>+ {rows.length - 50} {t('linha(s) a mais...')}</div>}
           </div>
         )}
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>{t('Cancelar')}</button>
           <button
             disabled={rows.length === 0}
             onClick={() => onImport(rows)}
             style={{ background: rows.length > 0 ? C.accent : C.panel2, color: rows.length > 0 ? "#000" : C.textFaint, border: "none", borderRadius: 5, padding: "8px 18px", fontSize: 11, fontWeight: 800, cursor: rows.length > 0 ? "pointer" : "not-allowed" }}
           >
-            Importar {rows.length > 0 ? `${rows.length} Registro(s)` : ""}
+            {t('Importar')} {rows.length > 0 ? `${rows.length} ${t('Registro(s)')}` : ""}
           </button>
         </div>
       </div>
@@ -5207,6 +5603,7 @@ function PasteImportModal({ onClose, onImport }) {
 }
 
 function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, onAddCode, onRemoveCode, fixedCodeIds = [] }) {
+  const { t } = useLang();
   const [form, setForm] = useState(() => initial || {
     daily: "",
     pendings: "NO HUNG",
@@ -5242,29 +5639,29 @@ function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, o
       <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 700, maxHeight: "90vh", overflowY: "auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
           <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.green }}>
-            {initial ? `Editar Produção: ${initial.map} - ${initial.location}` : "Adicionar Novo Item de Produção"}
+            {initial ? `${t('Editar Produção:')} ${initial.map} - ${initial.location}` : t('Adicionar Novo Item de Produção')}
           </div>
           <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
-          <Field label="Pendings"><Input value={form.pendings} onChange={set("pendings")} /></Field>
-          <Field label="Data"><Input type="date" value={form.date} onChange={set("date")} /></Field>
-          <Field label="Map / Código"><Input value={form.map} onChange={set("map")} placeholder="Ex: GT057E" /></Field>
-          <Field label="Location"><Input value={form.location} onChange={set("location")} placeholder="Ex: SE 025" /></Field>
+          <Field label={t('Pendings')}><Input value={form.pendings} onChange={set("pendings")} /></Field>
+          <Field label={t('Data')}><Input type="date" value={form.date} onChange={set("date")} /></Field>
+          <Field label={t('Map / Código')}><Input value={form.map} onChange={set("map")} placeholder="Ex: GT057E" /></Field>
+          <Field label={t('Location')}><Input value={form.location} onChange={set("location")} placeholder="Ex: SE 025" /></Field>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
-          <Field label="Splice"><Input value={form.splice} onChange={set("splice")} placeholder="Ex: 48" /></Field>
-          <Field label="Técnico / Name"><Input value={form.name} onChange={set("name")} placeholder="Ex: ROBSON" /></Field>
-          <Field label="Type"><Input value={form.type} onChange={set("type")} placeholder="Ex: AERIAL" /></Field>
-          <Field label="Type End"><Input value={form.typeEnd} onChange={set("typeEnd")} placeholder="Ex: END" /></Field>
+          <Field label={t('Splice')}><Input value={form.splice} onChange={set("splice")} placeholder="Ex: 48" /></Field>
+          <Field label={t('Técnico / Name')}><Input value={form.name} onChange={set("name")} placeholder="Ex: ROBSON" /></Field>
+          <Field label={t('Type')}><Input value={form.type} onChange={set("type")} placeholder="Ex: AERIAL" /></Field>
+          <Field label={t('Type End')}><Input value={form.typeEnd} onChange={set("typeEnd")} placeholder="Ex: END" /></Field>
         </div>
 
         <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 14, borderRadius: 6, marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
             <div style={{ fontWeight: 700, color: C.amber, fontSize: 11, textTransform: "uppercase" }}>
-              CÓDIGOS & QUANTIDADES
+              {t('CÓDIGOS & QUANTIDADES')}
             </div>
             {onAddCode && (
               <button
@@ -5273,7 +5670,7 @@ function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, o
                 title="Cadastra um código novo (ex: um código que surgiu e ainda não existe, como AS19) — passa a valer em toda a aba Produção"
                 style={{ display: "flex", alignItems: "center", gap: 4, background: "transparent", color: C.amber, border: `1px dashed ${C.amber}`, borderRadius: 4, padding: "4px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}
               >
-                <Plus size={11} /> Novo Código
+                <Plus size={11} /> {t('Novo Código')}
               </button>
             )}
           </div>
@@ -5307,16 +5704,16 @@ function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, o
 
         <div style={{ background: "rgba(0, 212, 255, 0.08)", border: `1px solid ${C.accent}`, padding: 12, borderRadius: 6, marginBottom: 16 }}>
           <div style={{ fontSize: 9.5, color: C.textDim, textTransform: "uppercase", marginBottom: 4 }}>
-            Resultado Formatado Automaticamente para a coluna ASBUILT:
+            {t('Resultado Formatado Automaticamente para a coluna ASBUILT:')}
           </div>
           <div style={{ fontSize: 15, fontWeight: 800, color: C.accent }}>
-            {generatedPreview || <span style={{ color: C.textFaint, fontSize: 12 }}>(Preencha as quantidades dos códigos)</span>}
+            {generatedPreview || <span style={{ color: C.textFaint, fontSize: 12 }}>{t('(Preencha as quantidades dos códigos)')}</span>}
           </div>
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
-          <button onClick={() => onSave(form)} style={{ background: C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Salvar Registro</button>
+          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>{t('Cancelar')}</button>
+          <button onClick={() => onSave(form)} style={{ background: C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Salvar Registro')}</button>
         </div>
       </div>
     </div>
@@ -5324,6 +5721,7 @@ function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, o
 }
 
 function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, productionList = [], weekDateRanges = {} }) {
+  const { t } = useLang();
   const today = new Date().toISOString().slice(0, 10);
   const [addOtInput, setAddOtInput] = useState("");
   const isQueueMode = mode === "QUEUE";
@@ -5466,46 +5864,46 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
       <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
         <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 420, maxHeight: "90vh", overflowY: "auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
-            <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>Atualizar AS-BUILT: {form.map}</div>
+            <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>{t('Atualizar AS-BUILT:')} {form.map}</div>
             <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />
           </div>
           <div style={{ fontSize: 10, color: C.textDim, marginBottom: 14, lineHeight: 1.5 }}>
-            Marque <strong style={{ color: C.amber }}>FAZENDO</strong> assim que começar (assim ninguém mais pega esse mapa), e <strong style={{ color: C.green }}>ATUALIZADO</strong> quando terminar. As OTs pendentes só somem quando marcar ATUALIZADO.
+            {t('Marque')} <strong style={{ color: C.amber }}>{t('FAZENDO')}</strong> {t('assim que começar (assim ninguém mais pega esse mapa), e')} <strong style={{ color: C.green }}>{t('ATUALIZADO')}</strong> {t('quando terminar. As OTs pendentes só somem quando marcar ATUALIZADO.')}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,82,82,0.08)", border: `1px solid ${C.red}`, padding: "8px 12px", borderRadius: 6, marginBottom: otSuggestion ? 6 : 14 }}>
-            <span style={{ fontSize: 10.5, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>OTs Pendentes</span>
+            <span style={{ fontSize: 10.5, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('OTs Pendentes')}</span>
             <span style={{ fontSize: 16, fontWeight: 800, color: C.red }}>{form.otCount}</span>
           </div>
           {otSuggestion && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "rgba(255,193,7,0.08)", border: `1px dashed ${C.amber}`, padding: "6px 10px", borderRadius: 6, marginBottom: 14 }}>
               <span style={{ fontSize: 9.5, color: C.textDim, lineHeight: 1.4 }}>
-                📋 Produção deste mapa: <strong style={{ color: C.amber }}>{otSuggestion.pending} de {otSuggestion.total} linhas</strong> ainda não marcadas FEITO.
-                {otSuggestion.pending !== Number(form.otCount || 0) && " Valor diferente do salvo aqui."}
+                📋 {t('Produção deste mapa:')} <strong style={{ color: C.amber }}>{otSuggestion.pending} {t('de')} {otSuggestion.total} {t('linhas')}</strong> {t('ainda não marcadas FEITO.')}
+                {otSuggestion.pending !== Number(form.otCount || 0) && ` ${t('Valor diferente do salvo aqui.')}`}
               </span>
               <button type="button" onClick={applyOtSuggestion} style={{ background: "transparent", border: `1px solid ${C.amber}`, color: C.amber, borderRadius: 5, padding: "4px 8px", fontSize: 9.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
-                Usar {otSuggestion.pending}
+                {t('Usar')} {otSuggestion.pending}
               </button>
             </div>
           )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Field label="Status AS-BUILT">
+            <Field label={t('Status AS-BUILT')}>
               <select value={form.asbuiltStatus} onChange={handleAsBuiltStatusChange} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
-                <option value="SEM_ATUALIZACAO_SEMANA">SEM ATUALIZAÇÃO NA SEMANA (ATÉ O MOMENTO)</option>
-                <option value="PENDENTE">PENDENTE</option>
-                <option value="FAZENDO">FAZENDO (Em Andamento)</option>
-                <option value="OK">ATUALIZADO (OK)</option>
-                <option value="ENTREGUE">ENTREGUE</option>
+                <option value="SEM_ATUALIZACAO_SEMANA">{t('SEM ATUALIZAÇÃO NA SEMANA (ATÉ O MOMENTO)')}</option>
+                <option value="PENDENTE">{t('PENDENTE')}</option>
+                <option value="FAZENDO">{t('FAZENDO (Em Andamento)')}</option>
+                <option value="OK">{t('ATUALIZADO (OK)')}</option>
+                <option value="ENTREGUE">{t('ENTREGUE')}</option>
               </select>
             </Field>
-            <Field label="Seu Nome (Técnico)"><Input placeholder="Nome de quem está atualizando..." value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
-            <Field label="Data"><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
+            <Field label={t('Seu Nome (Técnico)')}><Input placeholder={t('Nome de quem está atualizando...')} value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
+            <Field label={t('Data')}><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
           </div>
 
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
-            <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
-            <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Salvar Atualização</button>
+            <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>{t('Cancelar')}</button>
+            <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Salvar Atualização')}</button>
           </div>
         </div>
       </div>
@@ -5518,18 +5916,18 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
       <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 620, maxHeight: "90vh", overflowY: "auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
           <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: C.accent }}>
-            {initial ? `Editar Item: ${initial.map}` : "Cadastrar Novo Item Manual"}
+            {initial ? `${t('Editar Item:')} ${initial.map}` : t('Cadastrar Novo Item Manual')}
           </div>
           <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
-          <Field label="Dia de Entrega"><Input placeholder="Ex: QUINTA" value={form.deliveryDay} onChange={set("deliveryDay")} /></Field>
-          <Field label="Mapa / Código"><Input placeholder="Ex: AL-LE45E" value={form.map} onChange={set("map")} /></Field>
-          <Field label="Atribuir à Semana">
+          <Field label={t('Dia de Entrega')}><Input placeholder={t('Ex: QUINTA')} value={form.deliveryDay} onChange={set("deliveryDay")} /></Field>
+          <Field label={t('Mapa / Código')}><Input placeholder="Ex: AL-LE45E" value={form.map} onChange={set("map")} /></Field>
+          <Field label={t('Atribuir à Semana')}>
             <select value={form.cycle} onChange={set("cycle")} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
               {WEEK_OPTIONS.map((w) => (
-                <option key={w.id} value={w.id}>{formatWeekLabel(w, weekDateRanges)} {w.id === openWeek ? "(Aberta)" : "(Fechada)"}</option>
+                <option key={w.id} value={w.id}>{formatWeekLabel(w, weekDateRanges)} {w.id === openWeek ? t("(Aberta)") : t("(Fechada)")}</option>
               ))}
             </select>
           </Field>
@@ -5537,26 +5935,26 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
         <div style={{ background: "rgba(255,82,82,0.08)", border: `1px solid ${C.red}`, padding: 12, borderRadius: 6, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ color: C.red, fontWeight: 700, fontSize: 10, textTransform: "uppercase" }}>⚡ Priorização de OTs (Novas Demandas)</span>
-            <span style={{ fontSize: 11, fontWeight: 800, color: C.text }}>Saldo Total Pendente: <span style={{ color: C.red, fontSize: 14 }}>{form.otCount} OTs</span></span>
+            <span style={{ color: C.red, fontWeight: 700, fontSize: 10, textTransform: "uppercase" }}>⚡ {t('Priorização de OTs (Novas Demandas)')}</span>
+            <span style={{ fontSize: 11, fontWeight: 800, color: C.text }}>{t('Saldo Total Pendente:')} <span style={{ color: C.red, fontSize: 14 }}>{form.otCount} {t('OTs')}</span></span>
           </div>
           {otSuggestion && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "rgba(255,193,7,0.08)", border: `1px dashed ${C.amber}`, padding: "6px 10px", borderRadius: 6, marginBottom: 10 }}>
               <span style={{ fontSize: 9.5, color: C.textDim, lineHeight: 1.4 }}>
-                📋 Sugestão automática (Produção): <strong style={{ color: C.amber }}>{otSuggestion.pending} de {otSuggestion.total} linhas</strong> deste mapa ainda não marcadas FEITO.
-                {otSuggestion.pending !== Number(form.otCount || 0) && " Diferente do saldo salvo aqui."}
+                📋 {t('Sugestão automática (Produção):')} <strong style={{ color: C.amber }}>{otSuggestion.pending} {t('de')} {otSuggestion.total} {t('linhas')}</strong> {t('deste mapa ainda não marcadas FEITO.')}
+                {otSuggestion.pending !== Number(form.otCount || 0) && ` ${t('Diferente do saldo salvo aqui.')}`}
               </span>
               <button type="button" onClick={applyOtSuggestion} style={{ background: "transparent", border: `1px solid ${C.amber}`, color: C.amber, borderRadius: 5, padding: "4px 8px", fontSize: 9.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
-                Usar {otSuggestion.pending}
+                {t('Usar')} {otSuggestion.pending}
               </button>
             </div>
           )}
           <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-            <div style={{ flex: 1 }}><Field label="Adicionar OTs Criadas"><Input type="number" placeholder="Ex: 5" value={addOtInput} onChange={(e) => setAddOtInput(e.target.value)} /></Field></div>
-            <button onClick={handleAddOt} type="button" style={{ background: C.red, color: "#fff", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", height: 32 }}>+ Somar OTs</button>
+            <div style={{ flex: 1 }}><Field label={t('Adicionar OTs Criadas')}><Input type="number" placeholder="Ex: 5" value={addOtInput} onChange={(e) => setAddOtInput(e.target.value)} /></Field></div>
+            <button onClick={handleAddOt} type="button" style={{ background: C.red, color: "#fff", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", height: 32 }}>+ {t('Somar OTs')}</button>
           </div>
           <div style={{ marginTop: 8 }}>
-            <Field label="Ajustar Saldo Manualmente (sobrescreve o total acima)">
+            <Field label={t('Ajustar Saldo Manualmente (sobrescreve o total acima)')}>
               <Input type="number" placeholder="Ex: 3" value={form.otCount} onChange={(e) => setForm(f => ({ ...f, otCount: e.target.value === "" ? "" : Number(e.target.value) }))} />
             </Field>
           </div>
@@ -5564,57 +5962,57 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
         {initial && (
           <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 12 }}>
-            <div style={{ fontWeight: 700, color: C.accent, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>ETAPA AS-BUILT</div>
+            <div style={{ fontWeight: 700, color: C.accent, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>{t('ETAPA AS-BUILT')}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
-              <Field label="Status AS-BUILT">
+              <Field label={t('Status AS-BUILT')}>
                 <select value={form.asbuiltStatus} onChange={handleAsBuiltStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
-                  <option value="SEM_ATUALIZACAO_SEMANA">SEM ATUALIZAÇÃO NA SEMANA (ATÉ O MOMENTO)</option>
-                  <option value="PENDENTE">PENDENTE</option>
-                  <option value="FAZENDO">FAZENDO (Em Andamento)</option>
-                  <option value="OK">ATUALIZADO (OK)</option>
-                  <option value="ENTREGUE">ENTREGUE</option>
+                  <option value="SEM_ATUALIZACAO_SEMANA">{t('SEM ATUALIZAÇÃO NA SEMANA (ATÉ O MOMENTO)')}</option>
+                  <option value="PENDENTE">{t('PENDENTE')}</option>
+                  <option value="FAZENDO">{t('FAZENDO (Em Andamento)')}</option>
+                  <option value="OK">{t('ATUALIZADO (OK)')}</option>
+                  <option value="ENTREGUE">{t('ENTREGUE')}</option>
                 </select>
               </Field>
-              <Field label="Data AS-BUILT"><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
-              <Field label="Técnico AS-BUILT"><Input placeholder="Nome do técnico..." value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
+              <Field label={t('Data AS-BUILT')}><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
+              <Field label={t('Técnico AS-BUILT')}><Input placeholder={t('Nome do técnico...')} value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
             </div>
             <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 8, lineHeight: 1.5 }}>
-              Preencha o nome do técnico antes de marcar <strong style={{ color: C.amber }}>FAZENDO</strong> ou <strong style={{ color: C.green }}>ATUALIZADO</strong> — o mapa continua aparecendo na Fila de Prioridade enquanto estiver "FAZENDO" ou com OTs pendentes.
+              {t('Preencha o nome do técnico antes de marcar')} <strong style={{ color: C.amber }}>{t('FAZENDO')}</strong> {t('ou')} <strong style={{ color: C.green }}>{t('ATUALIZADO')}</strong> — {t('o mapa continua aparecendo na Fila de Prioridade enquanto estiver "FAZENDO" ou com OTs pendentes.')}
             </div>
           </div>
         )}
 
         <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: C.purple, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>ETAPA WORKBOOK</div>
+          <div style={{ fontWeight: 700, color: C.purple, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>{t('ETAPA WORKBOOK')}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
-            <Field label="Status Workbook">
+            <Field label={t('Status Workbook')}>
               <select value={form.workbookStatus} onChange={handleWorkbookStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
-                <option value="SIM">SIM (ATUALIZADO)</option>
-                <option value="PENDENTE">NÃO / PENDENTE</option>
+                <option value="SIM">{t('SIM (ATUALIZADO)')}</option>
+                <option value="PENDENTE">{t('NÃO / PENDENTE')}</option>
               </select>
             </Field>
-            <Field label="Data Atualização Workbook"><Input type="date" value={form.workbookDate} onChange={set("workbookDate")} /></Field>
-            <Field label="Técnico Workbook"><Input placeholder="Nome do técnico..." value={form.workbookTech} onChange={set("workbookTech")} /></Field>
+            <Field label={t('Data Atualização Workbook')}><Input type="date" value={form.workbookDate} onChange={set("workbookDate")} /></Field>
+            <Field label={t('Técnico Workbook')}><Input placeholder={t('Nome do técnico...')} value={form.workbookTech} onChange={set("workbookTech")} /></Field>
           </div>
         </div>
 
         <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: C.green, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>ETAPA INVOICE</div>
+          <div style={{ fontWeight: 700, color: C.green, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>{t('ETAPA INVOICE')}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
-            <Field label="Status Invoice">
+            <Field label={t('Status Invoice')}>
               <select value={form.invoiceStatus} onChange={handleInvoiceStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
-                <option value="SIM">SIM (ATUALIZADO)</option>
-                <option value="PENDENTE">NÃO / PENDENTE</option>
-                <option value="ENTREGUE">ENTREGUE</option>
+                <option value="SIM">{t('SIM (ATUALIZADO)')}</option>
+                <option value="PENDENTE">{t('NÃO / PENDENTE')}</option>
+                <option value="ENTREGUE">{t('ENTREGUE')}</option>
               </select>
             </Field>
-            <Field label="Data Atualização Invoice"><Input type="date" value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
-            <Field label="Técnico Invoice"><Input placeholder="Nome do técnico..." value={form.invoiceTech} onChange={set("invoiceTech")} /></Field>
+            <Field label={t('Data Atualização Invoice')}><Input type="date" value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
+            <Field label={t('Técnico Invoice')}><Input placeholder={t('Nome do técnico...')} value={form.invoiceTech} onChange={set("invoiceTech")} /></Field>
           </div>
         </div>
 
         <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, padding: 12, borderRadius: 6, marginBottom: 16 }}>
-            <div style={{ fontWeight: 700, color: C.textDim, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>Histórico do Ciclo (Sáb - Sex)</div>
+            <div style={{ fontWeight: 700, color: C.textDim, fontSize: 10, marginBottom: 8, textTransform: "uppercase" }}>{t('Histórico do Ciclo (Sáb - Sex)')}</div>
             <WeeklyActivityHeatmap
                 asbuiltHistory={form.asbuiltHistory}
                 workbookHistory={form.workbookHistory}
@@ -5623,11 +6021,11 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
             />
         </div>
 
-        <Field label="Observações / Detalhes"><Input placeholder="Observações adicionais..." value={form.note} onChange={set("note")} /></Field>
+        <Field label={t('Observações / Detalhes')}><Input placeholder={t('Observações adicionais...')} value={form.note} onChange={set("note")} /></Field>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
-          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancelar</button>
-          <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Salvar Produção</button>
+          <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>{t('Cancelar')}</button>
+          <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Salvar Produção')}</button>
         </div>
       </div>
     </div>
