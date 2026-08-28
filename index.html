@@ -80,7 +80,12 @@ const EN_DICT = {
   'NOVA': 'NEW',
   'já existe': 'already exists',
   'registro(s) importado(s) pra Produção': 'record(s) imported to Production',
+  'atualizado(s) com os dados mais novos da planilha.': 'updated with the newest data from the spreadsheet.',
   'já existia(m) e foram ignorado(s) automaticamente.': 'already existed and were automatically skipped.',
+  'Atualizar as linhas já existentes com os dados mais novos da planilha (em vez de ignorar)': 'Update rows that already exist with the newest spreadsheet data (instead of skipping)',
+  'Linhas marcadas "ATUALIZAR" vão receber o nome/tipo/códigos que vierem preenchidos na planilha. Nada que você já preencheu manualmente no site é apagado — só é sobrescrito o que a planilha realmente trouxer com valor.':
+    'Rows marked "UPDATE" will receive the name/type/codes that come filled in on the spreadsheet. Nothing you already filled in manually on the site is erased — only what the spreadsheet actually brings with a value gets overwritten.',
+  'ATUALIZAR': 'UPDATE',
   'Fechar': 'Close',
   'Códigos': 'Codes',
   'Código(s) novo(s) detectado(s) e cadastrado(s) automaticamente no sistema:': 'New code(s) detected and automatically registered in the system:',
@@ -3947,8 +3952,8 @@ function ProductionDashboard() {
   // Recebe as linhas "pendentes" já lidas pelo Scanner Drive (uma por mapa escaneado) e cria um
   // registro de produção pra cada uma que ainda não existe na aba Produção — sem precisar copiar
   // e colar manualmente do Excel/Drive. Os códigos ficam em branco pra preencher na hora do as-built.
-  const handleImportFromDrive = (rows) => {
-    if (!rows || rows.length === 0) return { imported: 0, skipped: 0, newCodes: [] };
+  const handleImportFromDrive = (rows, updateExisting = false) => {
+    if (!rows || rows.length === 0) return { imported: 0, updated: 0, skipped: 0, newCodes: [] };
 
     // Se alguma linha trouxe um código que ainda não existe no sistema (ex: coluna extra "FS10"
     // que só existe naquele mapa específico), cadastra automaticamente como código customizado —
@@ -3969,10 +3974,16 @@ function ProductionDashboard() {
     }
 
     const toAdd = [];
+    // sig -> linha vinda da planilha, pra quando o registro já existe mas o usuário marcou
+    // "Atualizar as linhas já existentes" — aí em vez de ignorar, mescla os dados novos.
+    const updatesBySig = new Map();
     let skipped = 0;
     rows.forEach((r) => {
       const sig = prodRowSignature(r);
-      if (existingProdSignatures.has(sig)) { skipped++; return; }
+      if (existingProdSignatures.has(sig)) {
+        if (updateExisting) { updatesBySig.set(sig, r); } else { skipped++; }
+        return;
+      }
       toAdd.push({
         id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         daily: "",
@@ -3988,8 +3999,34 @@ function ProductionDashboard() {
         codes: { US01: '', FS01: '', FS02: '', FS03: '', FS14: '', FS07A: '', FS08: '', FS16: '', FS04: '', AS24: '', MC01A: '', ...(r.codes || {}) },
       });
     });
-    if (toAdd.length > 0) setProductionList(prev => [...prev, ...toAdd]);
-    return { imported: toAdd.length, skipped, newCodes: [...newIds] };
+
+    if (toAdd.length > 0 || updatesBySig.size > 0) {
+      setProductionList(prev => {
+        let next = prev;
+        if (updatesBySig.size > 0) {
+          next = prev.map((item) => {
+            const incoming = updatesBySig.get(prodRowSignature(item));
+            if (!incoming) return item;
+            // Só sobrescreve nome/tipo se a planilha trouxe algo preenchido, e só sobrescreve os
+            // códigos que vieram com valor — códigos já preenchidos manualmente no site que a
+            // planilha não trouxe (vazio) continuam intactos, nada é apagado.
+            const incomingCodes = Object.fromEntries(
+              Object.entries(incoming.codes || {}).filter(([, v]) => v !== '' && v != null)
+            );
+            return {
+              ...item,
+              name: incoming.name || item.name,
+              type: incoming.typeCode || item.type,
+              typeEnd: incoming.type || item.typeEnd,
+              codes: { ...item.codes, ...incomingCodes },
+            };
+          });
+        }
+        return toAdd.length > 0 ? [...next, ...toAdd] : next;
+      });
+    }
+
+    return { imported: toAdd.length, updated: updatesBySig.size, skipped, newCodes: [...newIds] };
   };
 
   const [showDriveImportModal, setShowDriveImportModal] = useState(false);
@@ -5758,6 +5795,7 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
   });
   const lastScan = (() => { try { return localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || ''; } catch (e) { return ''; } })();
   const [onlyNew, setOnlyNew] = useState(true);
+  const [updateExisting, setUpdateExisting] = useState(false);
   const [checkedMaps, setCheckedMaps] = useState(null); // null = todos marcados por padrão
   const [result, setResult] = useState(null);
 
@@ -5802,7 +5840,7 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
   const totalNew = mapGroups.reduce((acc, g) => acc + g.newCount, 0);
 
   const handleConfirm = () => {
-    const res = onImport(selectedRows);
+    const res = onImport(selectedRows, updateExisting);
     setResult(res);
   };
 
@@ -5818,6 +5856,7 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
           <>
             <div style={{ fontSize: 12, color: C.text, lineHeight: 1.8, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 14 }}>
               ✓ <strong style={{ color: C.green }}>{result.imported}</strong> {t('registro(s) importado(s) pra Produção')}
+              {result.updated > 0 && <>{' '}— <strong style={{ color: "#4fc3f7" }}>{result.updated}</strong> {t('atualizado(s) com os dados mais novos da planilha.')}</>}
               {result.skipped > 0 && <>{' '}— {result.skipped} {t('já existia(m) e foram ignorado(s) automaticamente.')}</>}
               {result.newCodes && result.newCodes.length > 0 && (
                 <div style={{ marginTop: 8, fontSize: 11, color: "#4fc3f7" }}>
@@ -5849,14 +5888,29 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
             ) : (
               <>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.textDim, cursor: "pointer" }}>
-                    <input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />
-                    {t('Mostrar/importar só as linhas novas (ainda não estão na Produção)')}
-                  </label>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: updateExisting ? C.textFaint : C.textDim, cursor: updateExisting ? "not-allowed" : "pointer" }}>
+                      <input type="checkbox" checked={onlyNew} disabled={updateExisting} onChange={(e) => setOnlyNew(e.target.checked)} />
+                      {t('Mostrar/importar só as linhas novas (ainda não estão na Produção)')}
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#4fc3f7", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={updateExisting}
+                        onChange={(e) => { const v = e.target.checked; setUpdateExisting(v); if (v) setOnlyNew(false); }}
+                      />
+                      {t('Atualizar as linhas já existentes com os dados mais novos da planilha (em vez de ignorar)')}
+                    </label>
+                  </div>
                   <div style={{ fontSize: 11, fontWeight: 700, color: C.green }}>
                     {totalNew} {t('linha(s) nova(s) no total, em')} {mapGroups.length} {t('mapa(s)')}
                   </div>
                 </div>
+                {updateExisting && (
+                  <div style={{ fontSize: 10, color: C.textFaint, lineHeight: 1.5 }}>
+                    {t('Linhas marcadas "ATUALIZAR" vão receber o nome/tipo/códigos que vierem preenchidos na planilha. Nada que você já preencheu manualmente no site é apagado — só é sobrescrito o que a planilha realmente trouxer com valor.')}
+                  </div>
+                )}
 
                 <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${C.border2}`, borderRadius: 6 }}>
                   {mapGroups.map((g) => (
@@ -5886,7 +5940,9 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
                               <td style={{ padding: "4px 10px", width: 70 }}>
                                 {r.isNew
                                   ? <span style={{ color: C.green, fontWeight: 700 }}>{t('NOVA')}</span>
-                                  : <span style={{ color: C.textFaint }}>{t('já existe')}</span>}
+                                  : updateExisting
+                                    ? <span style={{ color: "#4fc3f7", fontWeight: 700 }}>{t('ATUALIZAR')}</span>
+                                    : <span style={{ color: C.textFaint }}>{t('já existe')}</span>}
                               </td>
                             </tr>
                           ))}
