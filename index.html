@@ -64,6 +64,26 @@ const EN_DICT = {
   'Gestão Interna (Salvamento Automático No Navegador)': 'Internal Management (Auto-Save In Browser)',
   'ARQUIVO': 'FILE',
   'Abrir': 'Open',
+  'Importar do Drive': 'Import from Drive',
+  'Importa as linhas pendentes já lidas na aba Scanner Drive — escaneie lá primeiro': 'Imports the pending rows already read on the Scanner Drive tab — scan there first',
+  'Traz direto pra cá as linhas pendentes que a aba': 'Brings the pending rows straight in that the tab',
+  'já leu das planilhas do Google Drive — sem precisar copiar e colar. Linhas que já existem na Produção (mesmo mapa + local + data + splice) são detectadas e não entram duplicadas.':
+    'already read from the Google Drive spreadsheets — no need to copy/paste. Rows that already exist in Production (same map + location + date + splice) are detected and won\'t be duplicated.',
+  'Se a lista abaixo estiver desatualizada ou vazia, vá na aba Scanner Drive e clique em "Escanear Agora" primeiro.': 'If the list below is out of date or empty, go to the Scanner Drive tab and click "Scan Now" first.',
+  'Última varredura do Drive:': 'Last Drive scan:',
+  'Nenhuma pendência encontrada na última varredura do Drive (ou nenhuma varredura foi feita ainda).': 'No pending rows found in the last Drive scan (or no scan has been done yet).',
+  'Mostrar/importar só as linhas novas (ainda não estão na Produção)': 'Show/import only new rows (not yet in Production)',
+  'linha(s) nova(s) no total, em': 'new row(s) total, across',
+  'mapa(s)': 'map(s)',
+  'nova(s)': 'new',
+  'total': 'total',
+  'NOVA': 'NEW',
+  'já existe': 'already exists',
+  'registro(s) importado(s) pra Produção': 'record(s) imported to Production',
+  'já existia(m) e foram ignorado(s) automaticamente.': 'already existed and were automatically skipped.',
+  'Fechar': 'Close',
+  'Códigos': 'Codes',
+  'Código(s) novo(s) detectado(s) e cadastrado(s) automaticamente no sistema:': 'New code(s) detected and automatically registered in the system:',
   'DASHBOARD DE CONTROLE': 'CONTROL DASHBOARD',
   'ABA PRODUÇÃO & CÓDIGOS AS-BUILT': 'PRODUCTION & AS-BUILT CODES',
   'AUTOMAÇÃO (MAPA)': 'AUTOMATION (MAP)',
@@ -2157,7 +2177,8 @@ function parseUSShortDate(str) {
 // pendente qualquer linha com data dentro do ciclo de faturamento atual (>= data informada).
 // Quando a aba TEM "END INVOICE", essa data nunca entra em jogo — o marcador sempre manda.
 function parseProductionSheetRows(rows, fallbackStartDate) {
-  let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType2 = -1;
+  let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType1 = -1, colType2 = -1;
+  let codeColumnMap = {}; // { índiceDaColuna: idDoCódigo } — ex: coluna "FS01" -> 'FS01'
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i] || [];
@@ -2169,7 +2190,30 @@ function parseProductionSheetRows(rows, fallbackStartDate) {
       colMap = norm.indexOf('MAP');
       colSplice = norm.indexOf('SPLICE');
       colName = norm.indexOf('NAME');
+      colType1 = norm.indexOf('TYPE'); // a 1ª coluna "TYPE" é AERIAL / UNDERGROUND
       colType2 = norm.lastIndexOf('TYPE'); // a 2ª coluna "TYPE" é END / RING CUT / etc.
+      // Colunas de código (AS24, FS01, FS02, FS03, FS14, FS07A, FS08, FS16, FS04, MC01A, US01):
+      // qualquer cabeçalho cujo texto bata exatamente com um ID de código do sistema é reconhecido
+      // e a quantidade daquela linha é lida direto — assim o gerador automático já sai pronto.
+      norm.forEach((cellText, idx) => {
+        const match = CODE_FIELDS.find((f) => f.id.toUpperCase() === cellText);
+        if (match) codeColumnMap[idx] = match.id;
+      });
+      // Além dos códigos padrão, alguns mapas ganham uma coluna extra pra um código novo que
+      // ainda não existe no sistema (ex: o técnico começou a usar "FS10" e a equipe adicionou
+      // uma coluna com esse título na planilha). Qualquer coluna à direita das colunas fixas
+      // (LOCATION/DATE/MAP/SPLICE/NAME/TYPE/TYPE) com um cabeçalho no formato de código
+      // (letras seguidas de números, ex: FS10, AS19) também é reconhecida automaticamente —
+      // mesmo sem já existir no sistema. Colunas tipo "CABLE" ou "CASE/FE" (sem números) ficam
+      // de fora, pra não confundir com anotações que não são um código de as-built.
+      const knownIdx = new Set([colLocation, colDate, colMap, colSplice, colName, colType1, colType2].filter((x) => x !== -1));
+      const maxKnownIdx = Math.max(-1, ...knownIdx);
+      norm.forEach((cellText, idx) => {
+        if (!cellText || knownIdx.has(idx) || codeColumnMap[idx] || idx <= maxKnownIdx) return;
+        if (/^[A-Z]{1,5}\d{1,3}[A-Z]?$/.test(cellText)) {
+          codeColumnMap[idx] = cellText.replace(/[^A-Z0-9]/g, '');
+        }
+      });
       break;
     }
   }
@@ -2202,7 +2246,17 @@ function parseProductionSheetRows(rows, fallbackStartDate) {
       location: row[colLocation] == null ? '' : String(row[colLocation]).trim(),
       splice: colSplice !== -1 ? row[colSplice] == null ? '' : String(row[colSplice]).trim() : '',
       name: colName !== -1 ? row[colName] == null ? '' : String(row[colName]).trim() : '',
+      // "type" (coluna END/RING CUT) mantido por compatibilidade com a tabela do Scanner Drive.
+      // "typeCode" é a 1ª coluna TYPE (AERIAL/UNDERGROUND) — usada pra importar pra Produção.
       type: colType2 !== -1 ? row[colType2] == null ? '' : String(row[colType2]).trim() : '',
+      typeCode: colType1 !== -1 ? row[colType1] == null ? '' : String(row[colType1]).trim() : '',
+      // Quantidades por código (US01, FS01, FS02...) lidas das colunas correspondentes da planilha.
+      codes: Object.keys(codeColumnMap).reduce((acc, idxStr) => {
+        const idx = parseInt(idxStr, 10);
+        const val = row[idx] == null ? '' : String(row[idx]).trim();
+        if (val !== '') acc[codeColumnMap[idx]] = val;
+        return acc;
+      }, {}),
     });
   }
 
@@ -2745,6 +2799,7 @@ function DriveScanTab() {
                                   <th style={thStyleDriveSm}>{t('Splice')}</th>
                                   <th style={thStyleDriveSm}>{t('Técnico')}</th>
                                   <th style={thStyleDriveSm}>{t('Tipo')}</th>
+                                  <th style={thStyleDriveSm}>{t('Códigos')}</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -2755,6 +2810,7 @@ function DriveScanTab() {
                                     <td style={tdStyleDriveSm}>{row.splice}</td>
                                     <td style={tdStyleDriveSm}>{row.name}</td>
                                     <td style={tdStyleDriveSm}>{row.type}</td>
+                                    <td style={{ ...tdStyleDriveSm, color: "#4fc3f7", fontWeight: 700 }}>{computeAsbuiltFormat(row.codes || {}) || '—'}</td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -3875,6 +3931,69 @@ function ProductionDashboard() {
     setShowPasteImportModal(false);
   };
 
+  // Assinatura única de uma linha (mapa + local + data + splice), pra saber se ela já existe
+  // na Produção e não importar duplicado quando a mesma pendência é importada mais de uma vez.
+  const prodRowSignature = (r) => [
+    String(r.map || '').trim().toUpperCase(),
+    String(r.location || '').trim().toUpperCase(),
+    String(r.date || '').trim(),
+    String(r.splice || '').trim().toUpperCase(),
+  ].join('|');
+
+  const existingProdSignatures = useMemo(() => {
+    return new Set(productionList.map(prodRowSignature));
+  }, [productionList]);
+
+  // Recebe as linhas "pendentes" já lidas pelo Scanner Drive (uma por mapa escaneado) e cria um
+  // registro de produção pra cada uma que ainda não existe na aba Produção — sem precisar copiar
+  // e colar manualmente do Excel/Drive. Os códigos ficam em branco pra preencher na hora do as-built.
+  const handleImportFromDrive = (rows) => {
+    if (!rows || rows.length === 0) return { imported: 0, skipped: 0, newCodes: [] };
+
+    // Se alguma linha trouxe um código que ainda não existe no sistema (ex: coluna extra "FS10"
+    // que só existe naquele mapa específico), cadastra automaticamente como código customizado —
+    // igual ao botão "Novo Código", mas sem interromper a importação com um alerta por linha.
+    const knownIds = new Set(allCodeFields.map((f) => f.id));
+    const newIds = new Set();
+    rows.forEach((r) => {
+      Object.keys(r.codes || {}).forEach((id) => {
+        if (id && !knownIds.has(id)) newIds.add(id);
+      });
+    });
+    if (newIds.size > 0) {
+      setCustomCodeFields((prev) => {
+        const existing = new Set([...CODE_FIELDS.map((f) => f.id), ...prev.map((f) => f.id)]);
+        const toAddFields = [...newIds].filter((id) => !existing.has(id)).map((id) => ({ id, label: id }));
+        return toAddFields.length > 0 ? [...prev, ...toAddFields] : prev;
+      });
+    }
+
+    const toAdd = [];
+    let skipped = 0;
+    rows.forEach((r) => {
+      const sig = prodRowSignature(r);
+      if (existingProdSignatures.has(sig)) { skipped++; return; }
+      toAdd.push({
+        id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        daily: "",
+        pendings: "NO HUNG",
+        done: false,
+        date: r.date || "",
+        map: r.map || "",
+        location: r.location || "",
+        splice: r.splice || "",
+        name: r.name || "",
+        type: r.typeCode || "AERIAL",
+        typeEnd: r.type || "END",
+        codes: { US01: '', FS01: '', FS02: '', FS03: '', FS14: '', FS07A: '', FS08: '', FS16: '', FS04: '', AS24: '', MC01A: '', ...(r.codes || {}) },
+      });
+    });
+    if (toAdd.length > 0) setProductionList(prev => [...prev, ...toAdd]);
+    return { imported: toAdd.length, skipped, newCodes: [...newIds] };
+  };
+
+  const [showDriveImportModal, setShowDriveImportModal] = useState(false);
+
   // ===== EXPORTAR .XLSX COM CORES (igual ao padrão usado na planilha do Google Sheets) =====
   const exportProdXLSX = async () => {
     if (!window.ExcelJS) {
@@ -4619,6 +4738,9 @@ function ProductionDashboard() {
               <button onClick={() => setShowPasteImportModal(true)} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
                 <ClipboardPaste size={14} /> {t('Colar do Excel')}
               </button>
+              <button onClick={() => setShowDriveImportModal(true)} title={t('Importa as linhas pendentes já lidas na aba Scanner Drive — escaneie lá primeiro')} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: "#4fc3f7", border: "1px solid #4fc3f7", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                <Download size={14} /> {t('Importar do Drive')}
+              </button>
               <button onClick={() => { setEditingProd(null); setShowProdModal(true); }} style={{ display: "flex", alignItems: "center", gap: 6, background: C.green, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
                 <Plus size={14} /> {t('Novo Registro de Produção')}
               </button>
@@ -4641,6 +4763,15 @@ function ProductionDashboard() {
 
       {showPasteImportModal && (
         <PasteImportModal onClose={() => setShowPasteImportModal(false)} onImport={handleImportPastedRows} />
+      )}
+
+      {showDriveImportModal && (
+        <DriveImportModal
+          onClose={() => setShowDriveImportModal(false)}
+          onImport={handleImportFromDrive}
+          existingSignatures={existingProdSignatures}
+          prodRowSignature={prodRowSignature}
+        />
       )}
 
       {activeTab === "AUTOMACAO" && <AutomacaoMapaTab productionRows={filteredProduction} mapLabel={selectedMapProd !== "ALL" ? selectedMapProd : ""} />}
@@ -5609,6 +5740,176 @@ function PasteImportModal({ onClose, onImport }) {
             {t('Importar')} {rows.length > 0 ? `${rows.length} ${t('Registro(s)')}` : ""}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Modal que traz direto pra Produção as linhas "pendentes" que a aba Scanner Drive já leu das
+// planilhas do Google Drive — sem precisar copiar/colar manualmente. Não faz varredura sozinho
+// (isso continua exigindo ir na aba Scanner Drive e clicar "Escanear Agora" ou conectar); aqui só
+// lê o resultado mais recente salvo no navegador (mesma fonte usada no Dashboard) e deixa
+// escolher quais mapas/linhas trazer.
+function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignature }) {
+  const { t, lang } = useLang();
+  const [driveResults, setDriveResults] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_RESULTS) || 'null') || []; }
+    catch (e) { return []; }
+  });
+  const lastScan = (() => { try { return localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || ''; } catch (e) { return ''; } })();
+  const [onlyNew, setOnlyNew] = useState(true);
+  const [checkedMaps, setCheckedMaps] = useState(null); // null = todos marcados por padrão
+  const [result, setResult] = useState(null);
+
+  // Uma linha por mapa escaneado que tem pendência, com suas linhas já anotadas como "nova"
+  // (ainda não existe na Produção) ou "já importada" (evita duplicar se importar de novo).
+  const mapGroups = useMemo(() => {
+    return driveResults
+      .filter((r) => !r.error && (r.pendingCount || 0) > 0 && r.pendingRows && r.pendingRows.length > 0)
+      .map((r) => {
+        const rows = r.pendingRows.map((row) => {
+          const full = { ...row, map: row.map || r.mapName };
+          const isNew = !existingSignatures.has(prodRowSignature(full));
+          return { ...full, isNew, sourceFile: r.fileName, webViewLink: r.webViewLink };
+        });
+        return { mapName: r.mapName, fileName: r.fileName, webViewLink: r.webViewLink, rows, newCount: rows.filter((x) => x.isNew).length };
+      })
+      .filter((g) => g.rows.length > 0)
+      .sort((a, b) => b.newCount - a.newCount);
+  }, [driveResults, existingSignatures, prodRowSignature]);
+
+  const isMapChecked = (mapName) => checkedMaps === null || checkedMaps.has(mapName);
+  const toggleMap = (mapName) => {
+    setCheckedMaps((prev) => {
+      const base = prev === null ? new Set(mapGroups.map((g) => g.mapName)) : new Set(prev);
+      if (base.has(mapName)) base.delete(mapName); else base.add(mapName);
+      return base;
+    });
+  };
+
+  const selectedRows = useMemo(() => {
+    const rows = [];
+    mapGroups.forEach((g) => {
+      if (!isMapChecked(g.mapName)) return;
+      g.rows.forEach((r) => {
+        if (onlyNew && !r.isNew) return;
+        rows.push(r);
+      });
+    });
+    return rows;
+  }, [mapGroups, checkedMaps, onlyNew]);
+
+  const totalNew = mapGroups.reduce((acc, g) => acc + g.newCount, 0);
+
+  const handleConfirm = () => {
+    const res = onImport(selectedRows);
+    setResult(res);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}>
+      <div style={{ background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 20, width: 820, maxHeight: "90vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+          <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 700, color: "#4fc3f7" }}>{t('Importar do Drive')}</div>
+          <X size={16} color={C.textDim} style={{ cursor: "pointer" }} onClick={onClose} />
+        </div>
+
+        {result ? (
+          <>
+            <div style={{ fontSize: 12, color: C.text, lineHeight: 1.8, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 14 }}>
+              ✓ <strong style={{ color: C.green }}>{result.imported}</strong> {t('registro(s) importado(s) pra Produção')}
+              {result.skipped > 0 && <>{' '}— {result.skipped} {t('já existia(m) e foram ignorado(s) automaticamente.')}</>}
+              {result.newCodes && result.newCodes.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 11, color: "#4fc3f7" }}>
+                  {t('Código(s) novo(s) detectado(s) e cadastrado(s) automaticamente no sistema:')} <strong>{result.newCodes.join(', ')}</strong>
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button onClick={onClose} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 18px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>{t('Fechar')}</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.6 }}>
+              {t('Traz direto pra cá as linhas pendentes que a aba')} <strong style={{ color: C.text }}>Scanner Drive</strong> {t('já leu das planilhas do Google Drive — sem precisar copiar e colar. Linhas que já existem na Produção (mesmo mapa + local + data + splice) são detectadas e não entram duplicadas.')}
+              {' '}{t('Se a lista abaixo estiver desatualizada ou vazia, vá na aba Scanner Drive e clique em "Escanear Agora" primeiro.')}
+            </div>
+
+            {lastScan && (
+              <div style={{ fontSize: 10, color: C.textFaint }}>
+                {t('Última varredura do Drive:')} {new Date(lastScan).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR')}
+              </div>
+            )}
+
+            {mapGroups.length === 0 ? (
+              <div style={{ padding: 20, textAlign: "center", color: C.textFaint, fontSize: 11, border: `1px dashed ${C.border2}`, borderRadius: 6 }}>
+                {t('Nenhuma pendência encontrada na última varredura do Drive (ou nenhuma varredura foi feita ainda).')}
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.textDim, cursor: "pointer" }}>
+                    <input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />
+                    {t('Mostrar/importar só as linhas novas (ainda não estão na Produção)')}
+                  </label>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.green }}>
+                    {totalNew} {t('linha(s) nova(s) no total, em')} {mapGroups.length} {t('mapa(s)')}
+                  </div>
+                </div>
+
+                <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${C.border2}`, borderRadius: 6 }}>
+                  {mapGroups.map((g) => (
+                    <div key={g.mapName} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: C.panel2, position: "sticky", top: 0 }}>
+                        <input type="checkbox" checked={isMapChecked(g.mapName)} onChange={() => toggleMap(g.mapName)} style={{ cursor: "pointer" }} />
+                        <strong style={{ fontSize: 11, color: C.text }}>{g.mapName}</strong>
+                        <span style={{ fontSize: 10, color: g.newCount > 0 ? C.green : C.textFaint }}>
+                          {g.newCount} {t('nova(s)')} / {g.rows.length} {t('total')}
+                        </span>
+                        {g.webViewLink && (
+                          <a href={g.webViewLink} target="_blank" rel="noreferrer" style={{ marginLeft: "auto", fontSize: 9.5, color: C.textFaint }}>{g.fileName}</a>
+                        )}
+                      </div>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <tbody>
+                          {g.rows.filter((r) => !onlyNew || r.isNew).map((r, idx) => (
+                            <tr key={idx} style={{ opacity: isMapChecked(g.mapName) ? 1 : 0.4 }}>
+                              <td style={{ padding: "4px 10px", color: C.textDim, width: 70 }}>{r.date}</td>
+                              <td style={{ padding: "4px 10px", color: C.text }}>{r.location}</td>
+                              <td style={{ padding: "4px 10px", color: C.textDim, width: 50 }}>{r.splice}</td>
+                              <td style={{ padding: "4px 10px", color: C.textDim, width: 130 }}>{r.name}</td>
+                              <td style={{ padding: "4px 10px", color: C.textDim, width: 90 }}>{r.typeCode || 'AERIAL'}</td>
+                              <td style={{ padding: "4px 10px", color: r.codes && Object.keys(r.codes).length > 0 ? "#4fc3f7" : C.textFaint, fontWeight: 700 }}>
+                                {computeAsbuiltFormat(r.codes || {}) || '—'}
+                              </td>
+                              <td style={{ padding: "4px 10px", width: 70 }}>
+                                {r.isNew
+                                  ? <span style={{ color: C.green, fontWeight: 700 }}>{t('NOVA')}</span>
+                                  : <span style={{ color: C.textFaint }}>{t('já existe')}</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>{t('Cancelar')}</button>
+              <button
+                disabled={selectedRows.length === 0}
+                onClick={handleConfirm}
+                style={{ background: selectedRows.length > 0 ? "#4fc3f7" : C.panel2, color: selectedRows.length > 0 ? "#000" : C.textFaint, border: "none", borderRadius: 5, padding: "8px 18px", fontSize: 11, fontWeight: 800, cursor: selectedRows.length > 0 ? "pointer" : "not-allowed" }}
+              >
+                {t('Importar')} {selectedRows.length > 0 ? `${selectedRows.length} ${t('Registro(s)')}` : ""}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
