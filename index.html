@@ -3749,6 +3749,26 @@ function ProductionDashboard() {
   const [rangeFrom, setRangeFrom] = useState("");
   const [rangeTo, setRangeTo] = useState("");
 
+  // O campo "date" de cada registro pode estar em formatos diferentes dependendo de onde ele veio:
+  // "YYYY-MM-DD" (registro criado manualmente no site) ou "MM/DD/YY" / "MM/DD/YYYY" (texto vindo
+  // direto da célula da planilha do Drive/Excel, ex: "08/29/26"). Os campos de <input type="date">
+  // de "DE / ATÉ" sempre geram "YYYY-MM-DD". Comparando strings de formatos diferentes direto
+  // (ex: "08/29/26" >= "2026-08-29") o resultado não tem sentido nenhum — por isso o período
+  // batia 0 registros mesmo tendo produção nos dias certos. Essa função normaliza tudo pra
+  // "YYYY-MM-DD" antes de comparar.
+  const normDateForCompare = (s) => {
+    if (!s) return "";
+    s = String(s).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // já é ISO
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); // MM/DD/YY ou MM/DD/YYYY
+    if (m) {
+      let [, mm, dd, yy] = m;
+      if (yy.length === 2) yy = (Number(yy) >= 70 ? '19' : '20') + yy;
+      return `${yy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+    }
+    return s;
+  };
+
   const toggleProdSelect = (id) => {
     setSelectedProdIds(prev => {
       const next = new Set(prev);
@@ -3815,7 +3835,10 @@ function ProductionDashboard() {
   };
   const periodProdStats = useMemo(() => {
     if (!rangeFrom || !rangeTo) return null;
-    const rows = filteredProduction.filter(p => p.date && p.date >= rangeFrom && p.date <= rangeTo);
+    const rows = filteredProduction.filter(p => {
+      const d = normDateForCompare(p.date);
+      return d && d >= rangeFrom && d <= rangeTo;
+    });
     const total = rows.length;
     const done = rows.filter(p => p.done).length;
     return { total, done, pending: total - done, from: rangeFrom, to: rangeTo };
@@ -3827,7 +3850,8 @@ function ProductionDashboard() {
     setSelectedProdIds(prev => {
       const next = new Set(prev);
       filteredProduction.forEach(p => {
-        if (p.date && p.date >= rangeFrom && p.date <= rangeTo) next.add(p.id);
+        const d = normDateForCompare(p.date);
+        if (d && d >= rangeFrom && d <= rangeTo) next.add(p.id);
       });
       return next;
     });
