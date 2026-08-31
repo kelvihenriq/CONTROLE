@@ -86,6 +86,9 @@ const EN_DICT = {
   'Linhas marcadas "ATUALIZAR" vão receber o nome/tipo/códigos que vierem preenchidos na planilha. Nada que você já preencheu manualmente no site é apagado — só é sobrescrito o que a planilha realmente trouxer com valor.':
     'Rows marked "UPDATE" will receive the name/type/codes that come filled in on the spreadsheet. Nothing you already filled in manually on the site is erased — only what the spreadsheet actually brings with a value gets overwritten.',
   'ATUALIZAR': 'UPDATE',
+  'desatualizado': 'stale',
+  'Este arquivo não apareceu na última varredura (fora da janela de dias configurada) — os dados abaixo são da última vez que ele foi lido.':
+    'This file did not appear in the last scan (outside the configured day window) — the data below is from the last time it was read.',
   'Fechar': 'Close',
   'Códigos': 'Codes',
   'Código(s) novo(s) detectado(s) e cadastrado(s) automaticamente no sistema:': 'New code(s) detected and automatically registered in the system:',
@@ -2512,8 +2515,8 @@ function DriveScanTab() {
 
           const mapName = (f.name || '')
             .replace(/PRODUCTION\s*LIST/i, '')
-            .replace(/\.xlsx$/i, '')
-            .replace(/[-–]+$/, '')
+            .replace(/\.(xlsx|xlsm|xls)$/i, '')
+            .replace(/[-–]+\s*$/, '')
             .trim() || f.name;
 
           scanResults.push({
@@ -2539,7 +2542,17 @@ function DriveScanTab() {
       }
 
       scanResults.sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
-      setResults(scanResults);
+      // MESCLA em vez de substituir: uma varredura só traz arquivos modificados dentro da janela
+      // de dias configurada acima. Sem mesclar, qualquer mapa que não tenha sido tocado nesse
+      // período sumiria da lista inteira (o Dashboard mostrava "—" nele, como se nunca tivesse
+      // sido escaneado). Agora o resultado anterior desse arquivo é mantido, só marcado como
+      // "stale" (desatualizado), até que ele volte a aparecer numa varredura futura.
+      setResults((prevResults) => {
+        const byId = new Map();
+        (prevResults || []).forEach((r) => { if (r && r.fileId) byId.set(r.fileId, { ...r, stale: true }); });
+        scanResults.forEach((r) => { byId.set(r.fileId, { ...r, stale: false }); });
+        return Array.from(byId.values()).sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
+      });
       const now = new Date().toISOString();
       setLastScan(now);
       try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_LAST, now); } catch (e) {}
@@ -2775,7 +2788,14 @@ function DriveScanTab() {
                       <td style={{ ...tdStyleDrive, color: C.textFaint }}>
                         <a href={r.webViewLink} target="_blank" rel="noreferrer" style={{ color: C.textDim }}>{r.fileName}</a>
                       </td>
-                      <td style={tdStyleDrive}>{r.modifiedTime ? new Date(r.modifiedTime).toLocaleString('pt-BR') : "—"}</td>
+                      <td style={tdStyleDrive}>
+                        {r.modifiedTime ? new Date(r.modifiedTime).toLocaleString('pt-BR') : "—"}
+                        {r.stale && (
+                          <span title={t('Este arquivo não apareceu na última varredura (fora da janela de dias configurada) — os dados abaixo são da última vez que ele foi lido.')} style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.textFaint, border: `1px solid ${C.border2}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
+                            {t('desatualizado')}
+                          </span>
+                        )}
+                      </td>
                       <td style={{ ...tdStyleDrive, fontWeight: 800, color: r.error ? C.textFaint : (r.pendingCount > 0 ? C.red : C.green) }}>
                         {r.error ? `${t('ERRO:')} ${r.error.slice(0, 60)}` : (r.pendingCount === 0 ? t('EM DIA') : `${r.pendingCount} ${t('linha(s) pendente(s)')}`)}
                         {r.usedDateFallback && r.pendingCount > 0 && (
@@ -5464,6 +5484,11 @@ function ProductionDashboard() {
                       ) : (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                           <span style={{ color: C.red, fontWeight: 800, fontSize: 10 }}>{dr.pendingCount} {t('linha(s) pendente(s)')}</span>
+                          {dr.stale && (
+                            <span title={t('Este arquivo não apareceu na última varredura (fora da janela de dias configurada) — os dados abaixo são da última vez que ele foi lido.')} style={{ fontSize: 8.5, fontWeight: 700, color: C.textFaint, border: `1px solid ${C.border2}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
+                              {t('desatualizado')}
+                            </span>
+                          )}
                           {dr.usedDateFallback && (
                             <span style={{ fontSize: 8.5, fontWeight: 800, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 4px" }}>{t('POR DATA')}</span>
                           )}
