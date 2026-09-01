@@ -2349,10 +2349,19 @@ function DriveScanTab() {
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_CONFIG, JSON.stringify(config)); } catch (e) {}
   }, [config]);
+  // Sincroniza Client ID + Drive selecionado com a nuvem — assim um colaborador não precisa
+  // colar o Client ID de novo manualmente em cada computador; só falta cada um clicar em
+  // "Conectar" com a própria conta Google (isso nunca é sincronizado, é por segurança).
+  useCloudSync('drive_scan_config', [config], () => config, (v) => setConfig((prev) => ({ ...prev, ...v })));
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_RESULTS, JSON.stringify(results)); } catch (e) {}
   }, [results]);
+  useCloudSync('drive_scan_results', [results], () => results, (v) => setResults(Array.isArray(v) ? v : []));
+  useCloudSync('drive_scan_last', [lastScan], () => lastScan, (v) => {
+    setLastScan(v || '');
+    try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_LAST, v || ''); } catch (e) {}
+  });
 
   // Espera o script do Google (Identity Services) terminar de carregar
   useEffect(() => {
