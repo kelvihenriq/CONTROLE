@@ -2360,11 +2360,12 @@ function DriveScanTab() {
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_RESULTS, JSON.stringify(results)); } catch (e) {}
   }, [results]);
-  useCloudSync('drive_scan_results', [results], () => results, (v) => setResults(Array.isArray(v) ? v : []));
-  useCloudSync('drive_scan_last', [lastScan], () => lastScan, (v) => {
-    setLastScan(v || '');
-    try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_LAST, v || ''); } catch (e) {}
-  });
+  // OBS: "drive_scan_results" e "drive_scan_last" são sincronizados na nuvem só uma vez, lá em
+  // cima no componente principal (Dashboard) — que fica sempre montado. Assinar a MESMA chave
+  // aqui de novo (essa aba só monta quando você clica em "Scanner Drive") abria um segundo canal
+  // do Supabase com o mesmo nome ao mesmo tempo, o que travava/apagava a tela ao entrar na aba.
+  // Essa aba já lê o valor certo do localStorage ao montar, que o componente principal mantém
+  // atualizado sozinho.
 
   // Espera o script do Google (Identity Services) terminar de carregar
   useEffect(() => {
