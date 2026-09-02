@@ -2276,11 +2276,14 @@ function parseProductionSheetRows(rows, fallbackStartDate) {
     const cutoff = new Date(fallbackStartDate + 'T00:00:00');
     pending = dataRows.filter((r) => {
       const d = parseUSShortDate(r.date);
-      return d && d >= cutoff && (r.date || r.location);
+      // Exige LOCATION preenchido pra contar como pendência de verdade — uma linha com só a
+      // data preenchida (por engano, ou um resto de linha em branco na planilha) não é um
+      // serviço real e não deve virar uma "linha fantasma" vazia na Produção.
+      return d && d >= cutoff && r.location;
     });
     usedDateFallback = true;
   } else {
-    pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.date || r.location);
+    pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.location);
   }
 
   return { pending, total: dataRows.length, usedDateFallback };
@@ -3253,6 +3256,18 @@ function ProductionDashboard() {
     catch (e) { return []; }
   });
   const [driveScanLast, setDriveScanLast] = useState(() => localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '');
+  // Assina a MESMA chave da nuvem que a aba Scanner Drive usa — assim o Dashboard mostra a
+  // varredura mais recente feita por QUALQUER colaborador em tempo real, mesmo que você nunca
+  // tenha aberto a aba Scanner Drive nem conectado sua própria conta Google neste navegador.
+  useCloudSync('drive_scan_results', [driveScanResults], () => driveScanResults, (v) => {
+    const list = Array.isArray(v) ? v : [];
+    setDriveScanResults(list);
+    try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_RESULTS, JSON.stringify(list)); } catch (e) {}
+  });
+  useCloudSync('drive_scan_last', [driveScanLast], () => driveScanLast, (v) => {
+    setDriveScanLast(v || '');
+    try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_LAST, v || ''); } catch (e) {}
+  });
   const [onlyDrivePending, setOnlyDrivePending] = useState(false);
   // Feedback visual rápido (2s) no botão "Atualizar Drive" pra deixar claro que o clique funcionou,
   // já que ele só recarrega o cache local (não sai buscando nada novo sozinho no Google Drive).
