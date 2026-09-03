@@ -247,6 +247,7 @@ const EN_DICT = {
   'os demais drives da organização ficam de fora.': 'the other drives in the organization are left out.',
   'Varredura de Mapas Pendentes': 'Pending Maps Scan',
   'Ciclo de faturamento desde (fallback sem END INVOICE)': 'Billing cycle since (fallback without END INVOICE)',
+  'Até (opcional)': 'Until (optional)',
   'Modificados nos últimos (dias)': 'Modified in the last (days)',
   'Escaneando': 'Scanning',
   'Escanear Agora': 'Scan Now',
@@ -2183,8 +2184,10 @@ function parseUSShortDate(str) {
 // fallbackStartDate ('YYYY-MM-DD' ou null): usado SÓ quando a aba não tem nenhum "END INVOICE"
 // marcado — nesse caso, em vez de considerar a aba inteira pendente (ou zerada), conta como
 // pendente qualquer linha com data dentro do ciclo de faturamento atual (>= data informada).
-// Quando a aba TEM "END INVOICE", essa data nunca entra em jogo — o marcador sempre manda.
-function parseProductionSheetRows(rows, fallbackStartDate) {
+// fallbackEndDate ('YYYY-MM-DD' ou null): opcional — limita esse mesmo fallback até essa data
+// (<=), pra puxar só uma janela específica (ex: 25/08 até 28/08) em vez de "desde X pra sempre".
+// Quando a aba TEM "END INVOICE", nenhuma dessas datas entra em jogo — o marcador sempre manda.
+function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
   let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType1 = -1, colType2 = -1;
   let codeColumnMap = {}; // { índiceDaColuna: idDoCódigo } — ex: coluna "FS01" -> 'FS01'
 
@@ -2272,14 +2275,16 @@ function parseProductionSheetRows(rows, fallbackStartDate) {
   let usedDateFallback = false;
 
   if (lastInvoiceRelIdx === -1 && fallbackStartDate) {
-    // Não achou nenhum "END INVOICE" nessa aba — usa a data de início do ciclo de faturamento
+    // Não achou nenhum "END INVOICE" nessa aba — usa a data de início (e, se informado, a data
+    // de fim) do ciclo de faturamento como janela.
     const cutoff = new Date(fallbackStartDate + 'T00:00:00');
+    const cutoffEnd = fallbackEndDate ? new Date(fallbackEndDate + 'T23:59:59') : null;
     pending = dataRows.filter((r) => {
       const d = parseUSShortDate(r.date);
       // Exige LOCATION preenchido pra contar como pendência de verdade — uma linha com só a
       // data preenchida (por engano, ou um resto de linha em branco na planilha) não é um
       // serviço real e não deve virar uma "linha fantasma" vazia na Produção.
-      return d && d >= cutoff && r.location;
+      return d && d >= cutoff && (!cutoffEnd || d <= cutoffEnd) && r.location;
     });
     usedDateFallback = true;
   } else {
@@ -2330,8 +2335,8 @@ const tdStyleDriveSm = { padding: "5px 8px", color: C.textDim };
 function DriveScanTab() {
   const { t, lang } = useLang();
   const [config, setConfig] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', sharedDriveId: '' }; }
-    catch (e) { return { clientId: '', cycleStartDate: '', sharedDriveId: '' }; }
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '' }; }
+    catch (e) { return { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '' }; }
   });
   const [token, setToken] = useState(null);
   const [sharedDrives, setSharedDrives] = useState([]);
@@ -2518,7 +2523,7 @@ function DriveScanTab() {
 
           if (mainSheetName) {
             const rows = window.XLSX.utils.sheet_to_json(wb.Sheets[mainSheetName], { header: 1, raw: false, defval: '' });
-            const parsed = parseProductionSheetRows(rows, config.cycleStartDate || null);
+            const parsed = parseProductionSheetRows(rows, config.cycleStartDate || null, config.cycleEndDate || null);
             if (parsed.pending.length > 0) {
               mapPending = parsed.pending.map((p) => ({ ...p, sheet: mainSheetName }));
             }
@@ -2744,7 +2749,10 @@ function DriveScanTab() {
         right={
           <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
             <Field label={t('Ciclo de faturamento desde (fallback sem END INVOICE)')}>
-              <Input type="date" value={config.cycleStartDate || ''} onChange={(e) => setConfig((c) => ({ ...c, cycleStartDate: e.target.value }))} style={{ width: 168 }} />
+              <Input type="date" value={config.cycleStartDate || ''} onChange={(e) => setConfig((c) => ({ ...c, cycleStartDate: e.target.value }))} style={{ width: 150 }} />
+            </Field>
+            <Field label={t('Até (opcional)')}>
+              <Input type="date" value={config.cycleEndDate || ''} onChange={(e) => setConfig((c) => ({ ...c, cycleEndDate: e.target.value }))} style={{ width: 150 }} />
             </Field>
             <Field label={t('Modificados nos últimos (dias)')}>
               <Input type="number" min="0" value={days} onChange={(e) => setDays(e.target.value)} style={{ width: 90 }} />
@@ -4313,11 +4321,17 @@ function ProductionDashboard() {
       const r = 9 + idx;
       const row = ws.getRow(r);
       const dateCell = row.getCell(1);
-      if (item.date) {
-        dateCell.value = new Date(`${item.date}T00:00:00`);
+      // Mesmo problema de formato que já vimos na Produção: quando a data vem direto da
+      // planilha do Drive ela é texto "MM/DD/YY" (ex: "09/01/26"), não "YYYY-MM-DD". Passar
+      // isso direto pro construtor de Date() gera uma data inválida (Invalid Date) — e o Excel
+      // exibe isso como "#NUM!" na coluna DATE. Por isso normalizamos pra ISO antes de criar a
+      // data do Excel.
+      const isoDate = normDateForCompare(item.date);
+      if (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+        dateCell.value = new Date(`${isoDate}T00:00:00`);
         dateCell.numFmt = 'dd/mm/yy';
       } else {
-        dateCell.value = '';
+        dateCell.value = item.date || '';
       }
       row.getCell(2).value = item.map || '';
       row.getCell(3).value = item.location || '';
