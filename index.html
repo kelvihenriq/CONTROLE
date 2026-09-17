@@ -247,6 +247,9 @@ const EN_DICT = {
   'os demais drives da organização ficam de fora.': 'the other drives in the organization are left out.',
   'Varredura de Mapas Pendentes': 'Pending Maps Scan',
   'Ciclo de faturamento desde (fallback sem END INVOICE)': 'Billing cycle since (fallback without END INVOICE)',
+  'Ou restringir a uma pasta comum (não é um Drive Compartilhado — ex: uma pasta que apareceu em "Compartilhados comigo")': 'Or restrict to a regular folder (not a Shared Drive — e.g. a folder that showed up under "Shared with me")',
+  'Cole o link ou o ID da pasta': 'Paste the folder link or ID',
+  'Varredura restrita a essa pasta e às subpastas dela — o resto que sua conta enxerga fica de fora.': 'Scan restricted to this folder and its subfolders — everything else your account can see is left out.',
   'Até (opcional)': 'Until (optional)',
   'Modificados nos últimos (dias)': 'Modified in the last (days)',
   'Escaneando': 'Scanning',
@@ -689,6 +692,16 @@ function migrateProductionCodes(list) {
     return item;
   });
   return changed ? next : list;
+}
+
+// Converte o valor de um código (ex: "48") pra número de verdade antes de escrever na planilha
+// exportada. Se ficasse como texto (string), o Excel/Sheets mostra o número certinho na célula
+// mas o SOMA() daquela coluna sempre dá 0 — porque SOMA ignora células de texto, mesmo que
+// pareçam números. Valores vazios ou não-numéricos continuam como estão (texto normal).
+function toNumOrBlank(v) {
+  if (v === undefined || v === null || v === '') return '';
+  const n = Number(v);
+  return Number.isFinite(n) ? n : v;
 }
 
 function computeAsbuiltFormat(codes = {}, fields = CODE_FIELDS) {
@@ -2335,8 +2348,8 @@ const tdStyleDriveSm = { padding: "5px 8px", color: C.textDim };
 function DriveScanTab() {
   const { t, lang } = useLang();
   const [config, setConfig] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '' }; }
-    catch (e) { return { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '' }; }
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '', folderIdFilter: '' }; }
+    catch (e) { return { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '', folderIdFilter: '' }; }
   });
   const [token, setToken] = useState(null);
   const [sharedDrives, setSharedDrives] = useState([]);
@@ -2460,6 +2473,53 @@ function DriveScanTab() {
     return resp;
   };
 
+  // Extrai o ID de uma pasta a partir de uma URL colada do Drive (ex: .../folders/ID?usp=...)
+  // ou, se já for só o ID puro, devolve ele mesmo.
+  const extractFolderId = (s) => {
+    if (!s) return '';
+    const m = String(s).match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    if (m) return m[1];
+    const m2 = String(s).match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (m2) return m2[1];
+    return String(s).trim();
+  };
+
+  // Pastas comuns (compartilhadas com "Compartilhados comigo", não Drives Compartilhados de
+  // verdade) não têm um "driveId" pra restringir a busca. Em vez disso, varremos a árvore de
+  // subpastas a partir da pasta raiz informada (BFS) e restringimos a busca de arquivos só aos
+  // IDs de pasta encontrados. Limita a 200 pastas pra não estourar o tamanho da query.
+  const collectFolderIds = async (rootId) => {
+    const ids = [rootId];
+    let queue = [rootId];
+    let safety = 0;
+    const CHUNK = 12; // mesmo motivo do lote na busca de arquivos: URL curta = conexão confiável
+    while (queue.length > 0 && ids.length < 200 && safety < 50) {
+      safety++;
+      const level = queue.splice(0, queue.length);
+      for (let i = 0; i < level.length; i += CHUNK) {
+        const batch = level.slice(i, i + CHUNK);
+        const orClause = batch.map((id) => `'${id}' in parents`).join(' or ');
+        let pageToken = '';
+        do {
+          const params = new URLSearchParams({
+            q: `mimeType = 'application/vnd.google-apps.folder' and trashed = false and (${orClause})`,
+            pageSize: '200',
+            fields: 'nextPageToken, files(id)',
+            includeItemsFromAllDrives: 'true',
+            supportsAllDrives: 'true',
+            corpora: 'allDrives',
+          });
+          if (pageToken) params.set('pageToken', pageToken);
+          const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
+          const data = await resp.json();
+          (data.files || []).forEach((f) => { if (!ids.includes(f.id)) { ids.push(f.id); queue.push(f.id); } });
+          pageToken = data.nextPageToken || '';
+        } while (pageToken);
+      }
+    }
+    return ids;
+  };
+
   const runScan = async () => {
     if (!token) { alert('Conecte ao Google Drive primeiro.'); return; }
     if (!window.XLSX) { alert('A biblioteca de leitura de Excel ainda não carregou. Tente de novo em instantes.'); return; }
@@ -2469,39 +2529,72 @@ function DriveScanTab() {
     setProgress({ done: 0, total: 0 });
 
     try {
-      // Não exige mais "fullText contains END INVOICE" — se exigisse, arquivos que nunca tiveram
-      // nenhum marcador (e por isso dependem do fallback por data) nem apareceriam na varredura.
-      let q = `name contains 'PRODUCTION' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`;
-      if (Number(days) > 0) {
-        const cutoff = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000).toISOString();
-        q += ` and modifiedTime > '${cutoff}'`;
+      // Se uma pasta comum (não Drive Compartilhado) foi configurada pra restringir a varredura,
+      // primeiro varre a árvore de subpastas dela e monta a lista de IDs pra filtrar os arquivos.
+      let folderIds = null;
+      if (config.folderIdFilter) {
+        const rootId = extractFolderId(config.folderIdFilter);
+        if (rootId) {
+          try { folderIds = await collectFolderIds(rootId); }
+          catch (e) { setError('Não consegui ler a pasta informada em "Restringir a uma pasta". Confira o link/ID. ' + (e.message || '')); setScanning(false); return; }
+        }
       }
 
+      // Não exige mais "fullText contains END INVOICE" — se exigisse, arquivos que nunca tiveram
+      // nenhum marcador (e por isso dependem do fallback por data) nem apareceriam na varredura.
+      const qBase = `name contains 'PRODUCTION' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`;
+      let qDateFilter = '';
+      if (Number(days) > 0) {
+        const cutoff = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000).toISOString();
+        qDateFilter = ` and modifiedTime > '${cutoff}'`;
+      }
+
+      // Busca os arquivos que batem com "q" (paginando até acabar) — função auxiliar reaproveitada
+      // tanto pro caso normal quanto pro caso com restrição de pasta (em lotes, ver abaixo).
+      const searchFiles = async (q, corporaParams) => {
+        let found = [];
+        let pageToken = '';
+        do {
+          const params = new URLSearchParams({
+            q,
+            pageSize: '100',
+            fields: 'nextPageToken, files(id, name, modifiedTime, webViewLink, size, driveId)',
+            orderBy: 'modifiedTime desc',
+            includeItemsFromAllDrives: 'true',
+            supportsAllDrives: 'true',
+            ...corporaParams,
+          });
+          if (pageToken) params.set('pageToken', pageToken);
+          const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
+          const data = await resp.json();
+          found = found.concat(data.files || []);
+          pageToken = data.nextPageToken || '';
+        } while (pageToken);
+        return found;
+      };
+
       let files = [];
-      let pageToken = '';
-      do {
-        const params = new URLSearchParams({
-          q,
-          pageSize: '100',
-          fields: 'nextPageToken, files(id, name, modifiedTime, webViewLink, size, driveId)',
-          orderBy: 'modifiedTime desc',
-          includeItemsFromAllDrives: 'true',
-          supportsAllDrives: 'true',
-        });
-        // Se um Drive Compartilhado específico foi selecionado (ex: "Stevens communications shared"),
-        // restringe a varredura só a ele. Caso contrário, cai no comportamento antigo (todos os drives).
-        if (config.sharedDriveId) {
-          params.set('corpora', 'drive');
-          params.set('driveId', config.sharedDriveId);
-        } else {
-          params.set('corpora', 'allDrives');
+      if (folderIds && folderIds.length > 0) {
+        // Quebra em lotes pequenos de pastas por consulta — juntar centenas de IDs numa cláusula
+        // "OR" só numa query deixa a URL gigante e o Google recusa a conexão (aparecia como
+        // "Failed to fetch", sem detalhe nenhum). Em lotes, cada requisição fica curta e segura.
+        const CHUNK = 12;
+        const seen = new Map();
+        for (let i = 0; i < folderIds.length; i += CHUNK) {
+          const chunk = folderIds.slice(i, i + CHUNK);
+          const orClause = chunk.map((id) => `'${id}' in parents`).join(' or ');
+          const q = `${qBase} and (${orClause})${qDateFilter}`;
+          const found = await searchFiles(q, { corpora: 'allDrives' });
+          found.forEach((f) => seen.set(f.id, f));
         }
-        if (pageToken) params.set('pageToken', pageToken);
-        const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
-        const data = await resp.json();
-        files = files.concat(data.files || []);
-        pageToken = data.nextPageToken || '';
-      } while (pageToken);
+        files = Array.from(seen.values());
+      } else {
+        const q = `${qBase}${qDateFilter}`;
+        const corporaParams = config.sharedDriveId
+          ? { corpora: 'drive', driveId: config.sharedDriveId }
+          : { corpora: 'allDrives' };
+        files = await searchFiles(q, corporaParams);
+      }
 
       setProgress({ done: 0, total: files.length });
 
@@ -2739,6 +2832,22 @@ function DriveScanTab() {
         {token && config.sharedDriveId && (
           <div style={{ fontSize: 10, color: C.green, marginTop: 8 }}>
             ✓ {t('Varredura restrita a:')} <strong>{(sharedDrives.find((d) => d.id === config.sharedDriveId) || {}).name || config.sharedDriveId}</strong> — {t('os demais drives da organização ficam de fora.')}
+          </div>
+        )}
+        {token && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.border2 || '#263040'}` }}>
+            <Field label={t('Ou restringir a uma pasta comum (não é um Drive Compartilhado — ex: uma pasta que apareceu em "Compartilhados comigo")')}>
+              <Input
+                placeholder={t('Cole o link ou o ID da pasta')}
+                value={config.folderIdFilter || ''}
+                onChange={(e) => setConfig((c) => ({ ...c, folderIdFilter: e.target.value }))}
+              />
+            </Field>
+            {config.folderIdFilter && (
+              <div style={{ fontSize: 10, color: "#4fc3f7", marginTop: 6 }}>
+                ✓ {t('Varredura restrita a essa pasta e às subpastas dela — o resto que sua conta enxerga fica de fora.')}
+              </div>
+            )}
           </div>
         )}
       </Panel>
@@ -4132,7 +4241,6 @@ function ProductionDashboard() {
     // ----- LINHA 1: TOTAIS -----
     const totalsRowData = new Array(totalCols).fill('');
     totalsRowData[0] = `TOTAIS ${selectedMapProd === "ALL" ? "(TODOS OS MAPAS)" : `(MAPA ${selectedMapProd})`} -->`;
-    allCodeFields.forEach((f, i) => { totalsRowData[nMain + i] = codeTotals[f.id] || 0; });
     totalsRowData[totalCols - 1] = 'AUTOMÁTICO';
     ws.getRow(1).values = totalsRowData;
     ws.mergeCells(1, 1, 1, nMain);
@@ -4146,12 +4254,22 @@ function ProductionDashboard() {
       ws.getRow(3 + idx).values = [
         item.daily || '', item.pendings || '', item.date || '', item.map || '', item.location || '',
         item.splice || '', item.name || '', item.type || '', item.typeEnd || '',
-        ...allCodeFields.map((f) => item.codes?.[f.id] || ''),
+        ...allCodeFields.map((f) => toNumOrBlank(item.codes?.[f.id])),
         asbuiltText
       ];
     });
 
     const lastDataRow = 2 + filteredProduction.length;
+
+    // Preenche a linha de TOTAIS com fórmulas de SOMA de verdade (não números fixos) — assim,
+    // se alguém editar um valor de código depois de exportado, o total no topo recalcula
+    // sozinho, em vez de ficar desatualizado igual ficava antes.
+    allCodeFields.forEach((f, i) => {
+      const col = nMain + 1 + i;
+      const colL = colLetter(col);
+      const cell = ws.getRow(1).getCell(col);
+      cell.value = { formula: `SUM(${colL}3:${colL}${lastDataRow})`, result: codeTotals[f.id] || 0 };
+    });
 
     // ----- CORES -----
     const mainHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1B5E20' } };
@@ -4251,13 +4369,14 @@ function ProductionDashboard() {
       while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
       return s;
     };
-    // Data no padrão DD-MM-AA usado no modelo (ex: 08-04-26 = 08/abril/2026)
-    const toDDMMYY = (isoDate) => {
+    // Data no padrão americano MM-DD-AA usado no modelo (ex: 08-04-26 = 04/agosto/2026) —
+    // é o formato que eles usam, não o brasileiro DD-MM-AA.
+    const toUSDate = (isoDate) => {
       if (!isoDate) return '';
       const parts = isoDate.split('-');
       if (parts.length !== 3) return isoDate;
       const [y, m, d] = parts;
-      return `${d}-${m}-${y.slice(-2)}`;
+      return `${m}-${d}-${y.slice(-2)}`;
     };
 
     const wb = new window.ExcelJS.Workbook();
@@ -4292,11 +4411,11 @@ function ProductionDashboard() {
 
     // ----- LINHA 7: TÍTULO "N: 0000 / DAY: ..." — usa o período selecionado na Lista de Produção -----
     const dayLabel = (() => {
-      if (rangeFrom && rangeTo) return rangeFrom === rangeTo ? toDDMMYY(rangeFrom) : `${toDDMMYY(rangeFrom)} A ${toDDMMYY(rangeTo)}`;
-      if (rangeFrom) return toDDMMYY(rangeFrom);
-      if (rangeTo) return toDDMMYY(rangeTo);
+      if (rangeFrom && rangeTo) return rangeFrom === rangeTo ? toUSDate(rangeFrom) : `${toUSDate(rangeFrom)} A ${toUSDate(rangeTo)}`;
+      if (rangeFrom) return toUSDate(rangeFrom);
+      if (rangeTo) return toUSDate(rangeTo);
       const dates = invoiceSourceRows.map((r) => r.date).filter(Boolean).sort();
-      return toDDMMYY(dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10));
+      return toUSDate(dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10));
     })();
     ws.mergeCells(7, 1, 7, totalCols);
     const titleCell = ws.getRow(7).getCell(1);
@@ -4329,7 +4448,7 @@ function ProductionDashboard() {
       const isoDate = normDateForCompare(item.date);
       if (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
         dateCell.value = new Date(`${isoDate}T00:00:00`);
-        dateCell.numFmt = 'dd/mm/yy';
+        dateCell.numFmt = 'mm/dd/yy'; // formato americano, igual à planilha original deles
       } else {
         dateCell.value = item.date || '';
       }
@@ -4339,7 +4458,7 @@ function ProductionDashboard() {
       row.getCell(5).value = item.name || '';
       row.getCell(6).value = item.type || '';
       row.getCell(7).value = item.typeEnd || '';
-      allCodeFields.forEach((f, i) => { row.getCell(nMain + 1 + i).value = item.codes?.[f.id] || ''; });
+      allCodeFields.forEach((f, i) => { row.getCell(nMain + 1 + i).value = toNumOrBlank(item.codes?.[f.id]); });
       row.height = 15.75;
     });
 
@@ -4378,9 +4497,14 @@ function ProductionDashboard() {
     ws.getRow(miniStartRow + 2).getCell(miniStartCol - 1).value = 'PRICE';
 
     invoiceRows.forEach((r, i) => {
-      const totalCell = ws.getRow(miniStartRow + 1).getCell(miniStartCol + i);
-      totalCell.value = r.total;
-      const priceCell = ws.getRow(miniStartRow + 2).getCell(miniStartCol + i);
+      const col = miniStartCol + i;
+      const totalCell = ws.getRow(miniStartRow + 1).getCell(col);
+      // Fórmula de verdade (=SOMA), não um número fixo — assim, se alguém editar um valor na
+      // planilha depois de exportada, o TOTAL recalcula sozinho em vez de ficar desatualizado.
+      // "result" é só o valor em cache pra já aparecer certo antes do Excel recalcular sozinho.
+      const colL = colLetter(col);
+      totalCell.value = { formula: `SUM(${colL}9:${colL}${lastDataRow})`, result: r.total };
+      const priceCell = ws.getRow(miniStartRow + 2).getCell(col);
       priceCell.value = r.price;
       priceCell.numFmt = '"$" #,##0.00';
       totalCell.fill = miniTotalFill;
@@ -4408,8 +4532,11 @@ function ProductionDashboard() {
     const codeCol = totalCols - 1;      // coluna de rótulos (código) logo à esquerda
     invoiceRows.forEach((r, idx) => {
       const row = ws.getRow(vStartRow + idx);
+      const totalMiniCol = colLetter(miniStartCol + idx);
       row.getCell(codeCol).value = r.label;
-      row.getCell(valueCol).value = r.subtotal;
+      // Fórmula: TOTAL (linha do mini-quadro acima) × PRICE (linha logo abaixo dele) — em vez de
+      // um número já calculado, assim ela acompanha se o TOTAL ou o PRICE mudarem depois.
+      row.getCell(valueCol).value = { formula: `${totalMiniCol}${miniStartRow + 1}*${totalMiniCol}${miniStartRow + 2}`, result: r.subtotal };
       row.getCell(codeCol).fill = miniTotalFill;
       row.getCell(valueCol).fill = miniTotalFill;
       row.getCell(codeCol).font = { name: 'Times New Roman', bold: true };
@@ -4423,7 +4550,12 @@ function ProductionDashboard() {
 
     const subtotalRow = vStartRow + invoiceRows.length + 2;
     ws.getRow(subtotalRow).getCell(codeCol).value = 'TOTAL';
-    ws.getRow(subtotalRow).getCell(valueCol).value = invoiceGrandTotal;
+    // Soma de verdade da coluna de subtotais logo acima — não um número fixo.
+    const valueColL = colLetter(valueCol);
+    ws.getRow(subtotalRow).getCell(valueCol).value = {
+      formula: `SUM(${valueColL}${vStartRow}:${valueColL}${vStartRow + invoiceRows.length - 1})`,
+      result: invoiceGrandTotal,
+    };
     ws.getRow(subtotalRow).getCell(codeCol).fill = navyFill;
     ws.getRow(subtotalRow).getCell(valueCol).fill = navyFill;
     ws.getRow(subtotalRow).getCell(codeCol).font = { name: 'Times New Roman', bold: true, color: { argb: 'FFFFFFFF' }, size: 16 };
