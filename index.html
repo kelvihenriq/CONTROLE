@@ -4419,7 +4419,7 @@ function ProductionDashboard() {
     })();
     ws.mergeCells(7, 1, 7, totalCols);
     const titleCell = ws.getRow(7).getCell(1);
-    titleCell.value = `N: 0000 / DAY: ${dayLabel}`;
+    titleCell.value = `N: 0000 / WEEK: ${dayLabel}`;
     titleCell.fill = titleFill;
     titleCell.font = { name: 'Times New Roman', bold: true, size: 16 };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -4581,7 +4581,7 @@ function ProductionDashboard() {
     const link = document.createElement('a');
     link.href = url;
     const mapSuffix = selectedMapProd === "ALL" ? "TODOS" : selectedMapProd.replace(/\s+/g, "_");
-    link.download = `Invoice_${mapSuffix}_DAY_${dayLabel.replace(/\s+/g, "_")}.xlsx`;
+    link.download = `Invoice_${mapSuffix}_WEEK_${dayLabel.replace(/\s+/g, "_")}.xlsx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
