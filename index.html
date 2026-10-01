@@ -2300,6 +2300,14 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       return d && d >= cutoff && (!cutoffEnd || d <= cutoffEnd) && r.location;
     });
     usedDateFallback = true;
+  } else if (lastInvoiceRelIdx === -1) {
+    // Não achou "END INVOICE" NEM tem um ciclo de faturamento configurado como fallback.
+    // IMPORTANTE: dataRows.slice(-1) com índice -1 não significa "tudo" — significa "só a
+    // ÚLTIMA linha"! Isso fazia a aba inteira (menos uma linha) sumir da contagem de pendências,
+    // às vezes zerando ela por completo e mostrando "EM DIA" numa planilha cheia de trabalho
+    // pendente de verdade. Sem nenhum marcador de corte, o certo é considerar a aba INTEIRA
+    // como pendente (ninguém fechou nada ainda).
+    pending = dataRows.filter((r) => r.location);
   } else {
     pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.location);
   }
