@@ -476,6 +476,14 @@ function useCloudSync(key, deps, getValue, applyRemote) {
       .channel('sync_' + key)
       .on('postgres_changes', { event: '*', schema: 'public', table: APP_STATE_TABLE, filter: `key=eq.${key}` }, (payload) => {
         if (payload.new && payload.new.value !== undefined) {
+          // Se já existe uma edição local esperando pra ser salva (o debounce de 500ms ainda não
+          // disparou), NÃO aplica essa atualização remota agora. Ela pode ser mais antiga do que
+          // o que está sendo digitado neste exato momento — aplicar na hora substituiria o bloco
+          // inteiro e faria o que a pessoa acabou de escrever sumir/ser apagado. Em vez disso, só
+          // ignora essa atualização por enquanto: o nosso próprio salvamento (já na fila) vai
+          // resolver sozinho, e qualquer atualização remota futura, depois que a fila esvaziar,
+          // continua sendo aplicada normalmente.
+          if (saveTimer.current) return;
           isApplyingRemote.current = true;
           applyRemote(payload.new.value);
         }
@@ -495,6 +503,9 @@ function useCloudSync(key, deps, getValue, applyRemote) {
     if (isApplyingRemote.current) { isApplyingRemote.current = false; return; }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
+      // Marca que não há mais salvamento pendente ANTES de disparar o upsert — é esse sinal que
+      // o handler do Realtime acima usa pra saber se pode aplicar atualizações remotas de novo.
+      saveTimer.current = null;
       sb.from(APP_STATE_TABLE).upsert({ key, value: getValue(), updated_at: new Date().toISOString() })
         .then(({ error }) => { if (error) console.error(`[Supabase] Falha ao salvar "${key}"`, error); });
     }, 500);
