@@ -2243,9 +2243,19 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       // de fora, pra não confundir com anotações que não são um código de as-built.
       const knownIdx = new Set([colLocation, colDate, colMap, colSplice, colName, colType1, colType2].filter((x) => x !== -1));
       const maxKnownIdx = Math.max(-1, ...knownIdx);
+      // Cabeçalhos que claramente NÃO são um código de as-built, mesmo batendo no formato
+      // "letras curtas" abaixo (ex: anotações ou textos livres de algumas planilhas).
+      const NON_CODE_HEADER_WORDS = new Set(['CABLE', 'NOTES', 'NOTE', 'COMMENTS', 'COMMENT', 'PHOTOS', 'PHOTO', 'STATUS', 'OBS']);
       norm.forEach((cellText, idx) => {
         if (!cellText || knownIdx.has(idx) || codeColumnMap[idx] || idx <= maxKnownIdx) return;
-        if (/^[A-Z]{1,5}\d{1,3}[A-Z]?$/.test(cellText)) {
+        if (NON_CODE_HEADER_WORDS.has(cellText)) return;
+        // Antes exigia pelo menos um dígito no nome (ex: FS10, AS19) — mas alguns mapas usam
+        // códigos próprios 100% alfabéticos (ex: "SPYJU", "SPYJA"), sem nenhum número, e essas
+        // colunas ficavam de fora silenciosamente, sumindo os valores delas. Agora aceita
+        // qualquer cabeçalho curto (até 8 caracteres), só com letras/números, sem espaço nem
+        // barra — isso já separa um código ("SPYJU", "FS10") de uma anotação de texto livre
+        // ("CASE / FE", "OTE RING", que têm espaço ou barra e continuam de fora).
+        if (/^[A-Z0-9]{1,8}$/.test(cellText) && /[A-Z]/.test(cellText)) {
           codeColumnMap[idx] = cellText.replace(/[^A-Z0-9]/g, '');
         }
       });
