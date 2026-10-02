@@ -5174,8 +5174,8 @@ function ProductionDashboard() {
                         {codeTotals[f.id] || 0}
                       </td>
                     ))}
-                    <td style={{ padding: "8px", background: C.panel2, color: C.textDim, fontSize: 10 }}>{t('AUTOMÁTICO')}</td>
-                    <td style={{ padding: "8px", background: C.panel2 }}></td>
+                    <td style={{ padding: "8px", background: C.panel2, color: C.textDim, fontSize: 10, position: "sticky", right: 76, zIndex: 3 }}>{t('AUTOMÁTICO')}</td>
+                    <td style={{ padding: "8px", background: C.panel2, position: "sticky", right: 0, zIndex: 3 }}></td>
                   </tr>
 
                   {/* CABEÇALHOS */}
@@ -5200,10 +5200,10 @@ function ProductionDashboard() {
                       </th>
                     ))}
 
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#182a3a", color: C.accent, fontWeight: 800 }}>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#182a3a", color: C.accent, fontWeight: 800, position: "sticky", right: 76, zIndex: 3, boxShadow: "-4px 0 6px -2px rgba(0,0,0,0.4)" }}>
                       {t('ASBUILT (GERADO)')}
                     </th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2 }}>{t('AÇÕES')}</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.panel2, position: "sticky", right: 0, zIndex: 3 }}>{t('AÇÕES')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -5236,7 +5236,7 @@ function ProductionDashboard() {
                           </td>
                         ))}
 
-                        <td style={{ padding: "6px 12px", border: `1px solid ${C.border2}`, background: "rgba(0, 212, 255, 0.05)", color: C.accent, fontWeight: 800, textAlign: "left" }}>
+                        <td style={{ padding: "6px 12px", border: `1px solid ${C.border2}`, background: isDone ? "#0f2b22" : (isSelected ? "#0f2a38" : "#0b1620"), color: C.accent, fontWeight: 800, textAlign: "left", position: "sticky", right: 76, zIndex: 2, boxShadow: "-4px 0 6px -2px rgba(0,0,0,0.4)" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
                             <span>{asbuiltText || <span style={{ color: C.textFaint, fontWeight: 400 }}>—</span>}</span>
                             {asbuiltText && (
@@ -5257,7 +5257,7 @@ function ProductionDashboard() {
                           </div>
                         </td>
 
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, background: isDone ? "#0f2b22" : (isSelected ? "#0f2a38" : "#0b1620"), position: "sticky", right: 0, zIndex: 2 }}>
                           <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
                             <Edit2 size={13} color={C.textDim} style={{ cursor: "pointer" }} onClick={() => { setEditingProd(item); setShowProdModal(true); }} />
                             <Trash2 size={13} color={C.textDim} style={{ cursor: "pointer" }} onClick={() => handleDeleteProd(item.id)} />
