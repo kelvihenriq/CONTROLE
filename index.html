@@ -2212,7 +2212,7 @@ function parseUSShortDate(str) {
 // (<=), pra puxar só uma janela específica (ex: 25/08 até 28/08) em vez de "desde X pra sempre".
 // Quando a aba TEM "END INVOICE", nenhuma dessas datas entra em jogo — o marcador sempre manda.
 function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
-  let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType1 = -1, colType2 = -1;
+  let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType1 = -1, colType2 = -1, colFiber = -1, colPendings = -1;
   let codeColumnMap = {}; // { índiceDaColuna: idDoCódigo } — ex: coluna "FS01" -> 'FS01'
 
   for (let i = 0; i < rows.length; i++) {
@@ -2223,6 +2223,9 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       colLocation = norm.indexOf('LOCATION');
       colDate = norm.indexOf('DATE');
       colMap = norm.indexOf('MAP');
+      // Colunas A/B da planilha: "FIBER" (antigo "DAILY") e "PENDINGS" — vêm antes do DATE.
+      colFiber = norm.indexOf('FIBER') !== -1 ? norm.indexOf('FIBER') : norm.indexOf('DAILY');
+      colPendings = norm.indexOf('PENDINGS');
       colSplice = norm.indexOf('SPLICE');
       colName = norm.indexOf('NAME');
       colType1 = norm.indexOf('TYPE'); // a 1ª coluna "TYPE" é AERIAL / UNDERGROUND
@@ -2241,7 +2244,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       // (letras seguidas de números, ex: FS10, AS19) também é reconhecida automaticamente —
       // mesmo sem já existir no sistema. Colunas tipo "CABLE" ou "CASE/FE" (sem números) ficam
       // de fora, pra não confundir com anotações que não são um código de as-built.
-      const knownIdx = new Set([colLocation, colDate, colMap, colSplice, colName, colType1, colType2].filter((x) => x !== -1));
+      const knownIdx = new Set([colLocation, colDate, colMap, colSplice, colName, colType1, colType2, colFiber, colPendings].filter((x) => x !== -1));
       const maxKnownIdx = Math.max(-1, ...knownIdx);
       // Cabeçalhos que claramente NÃO são um código de as-built, mesmo batendo no formato
       // "letras curtas" abaixo (ex: anotações ou textos livres de algumas planilhas).
@@ -2286,6 +2289,8 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
     }
 
     dataRows.push({
+      fiber: colFiber !== -1 ? (row[colFiber] == null ? '' : String(row[colFiber]).trim()) : '',
+      pendings: colPendings !== -1 ? (row[colPendings] == null ? '' : String(row[colPendings]).trim()) : '',
       date: row[colDate] == null ? '' : String(row[colDate]).trim(),
       map: colMap !== -1 ? String(row[colMap] == null ? '' : row[colMap]).trim() : '',
       location: row[colLocation] == null ? '' : String(row[colLocation]).trim(),
@@ -3580,7 +3585,7 @@ function ProductionDashboard() {
     const total = generalTableItems.length;
     const asbuiltDone = generalTableItems.filter(p => p.asbuiltStatus === "OK" || p.asbuiltStatus === "ENTREGUE").length;
     const invoiceDone = generalTableItems.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK" || p.invoiceStatus === "ENTREGUE").length;
-    const workbookDone = generalTableItems.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK").length;
+    const workbookDone = generalTableItems.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK" || p.workbookStatus === "ENTREGUE").length;
     const pct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
     return {
       total,
@@ -3651,7 +3656,7 @@ function ProductionDashboard() {
 
   const kpis = useMemo(() => {
     const total = filteredAndSorted.length;
-    const ok = filteredAndSorted.filter(p => p.status === "OK" || ((p.asbuiltStatus === "OK" || p.asbuiltStatus === "ENTREGUE") && (p.invoiceStatus === "SIM" || p.invoiceStatus === "ENTREGUE") && p.workbookStatus === "SIM")).length;
+    const ok = filteredAndSorted.filter(p => p.status === "OK" || ((p.asbuiltStatus === "OK" || p.asbuiltStatus === "ENTREGUE") && (p.invoiceStatus === "SIM" || p.invoiceStatus === "ENTREGUE") && (p.workbookStatus === "SIM" || p.workbookStatus === "ENTREGUE"))).length;
     const pending = total - ok;
     const totalOTs = filteredAndSorted.reduce((acc, p) => acc + (p.otCount || 0), 0);
     // Total equivalente pela Produção: soma, por mapa presente neste ciclo, das linhas de Produção
@@ -3664,7 +3669,7 @@ function ProductionDashboard() {
       return acc;
     }, 0);
     const invoiceUpdated = filteredAndSorted.filter(p => p.invoiceStatus === "SIM" || p.invoiceStatus === "OK" || p.invoiceStatus === "ENTREGUE").length;
-    const workbookUpdated = filteredAndSorted.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK").length;
+    const workbookUpdated = filteredAndSorted.filter(p => p.workbookStatus === "SIM" || p.workbookStatus === "OK" || p.workbookStatus === "ENTREGUE").length;
     const rate = total > 0 ? Math.round((ok / total) * 100) : 0;
 
     return { total, ok, pending, totalOTs, totalOTsFromProduction, invoiceUpdated, workbookUpdated, rate };
@@ -3689,7 +3694,7 @@ function ProductionDashboard() {
 
     const isFullyDone = (asbuiltStatus === "OK" || asbuiltStatus === "ENTREGUE")
       && (item.invoiceStatus === "SIM" || item.invoiceStatus === "ENTREGUE")
-      && item.workbookStatus === "SIM";
+      && (item.workbookStatus === "SIM" || item.workbookStatus === "ENTREGUE");
 
     const finalItem = {
       ...item,
@@ -4201,8 +4206,8 @@ function ProductionDashboard() {
       }
       toAdd.push({
         id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        daily: "",
-        pendings: "NO HUNG",
+        daily: r.fiber || "",
+        pendings: r.pendings || "",
         done: false,
         date: r.date || "",
         map: r.map || "",
@@ -4230,6 +4235,8 @@ function ProductionDashboard() {
             );
             return {
               ...item,
+              daily: incoming.fiber || item.daily,
+              pendings: incoming.pendings || item.pendings,
               name: incoming.name || item.name,
               type: incoming.typeCode || item.type,
               typeEnd: incoming.type || item.typeEnd,
@@ -4252,7 +4259,7 @@ function ProductionDashboard() {
       alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
       return;
     }
-    const mainHeaders = ["DAILY", "PENDINGS", "DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE"];
+    const mainHeaders = ["FIBER", "PENDINGS", "DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE"];
     const codeHeaders = allCodeFields.map((f) => f.label);
     const headers = [...mainHeaders, ...codeHeaders, "ASBUILT (GERADO)"];
     const nMain = mainHeaders.length;
@@ -5184,7 +5191,7 @@ function ProductionDashboard() {
                       <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} title="Selecionar/desmarcar todas as linhas visíveis" style={{ cursor: "pointer" }} />
                     </th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.greenSoft, color: C.green }} title="Marcar como já produzido/concluído">{t('FEITO')}</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DAILY</th>
+                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>FIBER</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>MAP</th>
@@ -5219,7 +5226,7 @@ function ProductionDashboard() {
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
                           <input type="checkbox" checked={isDone} onChange={() => toggleProdDone(item.id)} title="Marcar como já produzido/concluído" style={{ cursor: "pointer", width: 16, height: 16, accentColor: C.green }} />
                         </td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.daily || '—'}</td>
+                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none", whiteSpace: "pre-wrap", maxWidth: 220, fontSize: 10 }}>{item.daily || '—'}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.amber, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.pendings || '—'}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.date}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text, textDecoration: isDone ? "line-through" : "none" }}>{item.map}</td>
@@ -6262,7 +6269,8 @@ function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, o
           <X size={16} color={C.textFaint} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+          <Field label="Fiber"><Input value={form.daily} onChange={set("daily")} /></Field>
           <Field label={t('Pendings')}><Input value={form.pendings} onChange={set("pendings")} /></Field>
           <Field label={t('Data')}><Input type="date" value={form.date} onChange={set("date")} /></Field>
           <Field label={t('Map / Código')}><Input value={form.map} onChange={set("map")} placeholder="Ex: GT057E" /></Field>
@@ -6435,19 +6443,20 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
     const val = e.target.value;
     // Mesma trava do AS-BUILT: exige o nome do técnico antes de marcar SIM, senão a
     // atualização fica sem dono e some da pontuação de "Desempenho Colaborador".
-    if (val === "SIM" && !(form.workbookTech || '').trim()) {
-      alert('Preencha o campo "Técnico Workbook" antes de marcar como ATUALIZADO (SIM) — sem o nome, a atualização não conta na pontuação do colaborador.');
+    const countsAsActivity = val === "SIM" || val === "FAZENDO" || val === "ENTREGUE";
+    if (countsAsActivity && !(form.workbookTech || '').trim()) {
+      alert('Preencha o campo "Técnico Workbook" antes de marcar FAZENDO, ATUALIZADO ou ENTREGUE — sem o nome, a atualização não conta na pontuação do colaborador.');
       return;
     }
     setForm(f => {
       const currentHistory = Array.isArray(f.workbookHistory) ? f.workbookHistory : [];
-      const workbookHistory = val === "SIM" && !historyHasDate(currentHistory, today)
+      const workbookHistory = countsAsActivity && !historyHasDate(currentHistory, today)
         ? [...currentHistory, { date: today, tech: (f.workbookTech || '').trim() }]
         : currentHistory;
       return {
         ...f,
         workbookStatus: val,
-        workbookDate: val === "SIM" && !f.workbookDate ? today : f.workbookDate,
+        workbookDate: countsAsActivity && !f.workbookDate ? today : f.workbookDate,
         workbookHistory
       };
     });
@@ -6455,11 +6464,11 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
   const handleInvoiceStatusChange = (e) => {
     const val = e.target.value;
-    const countsAsActivity = val === "SIM" || val === "ENTREGUE";
+    const countsAsActivity = val === "SIM" || val === "FAZENDO" || val === "ENTREGUE";
     // Mesma trava do AS-BUILT: exige o nome do técnico antes de marcar SIM/ENTREGUE, senão a
     // atualização fica sem dono e some da pontuação de "Desempenho Colaborador".
     if (countsAsActivity && !(form.invoiceTech || '').trim()) {
-      alert('Preencha o campo "Técnico Invoice" antes de marcar como ATUALIZADO (SIM) ou ENTREGUE — sem o nome, a atualização não conta na pontuação do colaborador.');
+      alert('Preencha o campo "Técnico Invoice" antes de marcar FAZENDO, ATUALIZADO ou ENTREGUE — sem o nome, a atualização não conta na pontuação do colaborador.');
       return;
     }
     setForm(f => {
@@ -6605,8 +6614,10 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
             <Field label={t('Status Workbook')}>
               <select value={form.workbookStatus} onChange={handleWorkbookStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
-                <option value="SIM">{t('SIM (ATUALIZADO)')}</option>
-                <option value="PENDENTE">{t('NÃO / PENDENTE')}</option>
+                <option value="PENDENTE">{t('PENDENTE')}</option>
+                <option value="FAZENDO">{t('FAZENDO (Em Andamento)')}</option>
+                <option value="SIM">{t('ATUALIZADO (OK)')}</option>
+                <option value="ENTREGUE">{t('ENTREGUE')}</option>
               </select>
             </Field>
             <Field label={t('Data Atualização Workbook')}><Input type="date" value={form.workbookDate} onChange={set("workbookDate")} /></Field>
@@ -6619,8 +6630,9 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 10 }}>
             <Field label={t('Status Invoice')}>
               <select value={form.invoiceStatus} onChange={handleInvoiceStatusChange} style={{ background: C.panel, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
-                <option value="SIM">{t('SIM (ATUALIZADO)')}</option>
-                <option value="PENDENTE">{t('NÃO / PENDENTE')}</option>
+                <option value="PENDENTE">{t('PENDENTE')}</option>
+                <option value="FAZENDO">{t('FAZENDO (Em Andamento)')}</option>
+                <option value="SIM">{t('ATUALIZADO (OK)')}</option>
                 <option value="ENTREGUE">{t('ENTREGUE')}</option>
               </select>
             </Field>
