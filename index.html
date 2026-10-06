@@ -433,8 +433,27 @@ const APP_STATE_TABLE = 'app_state';
 // - deps: array de dependências que, quando mudar, dispara o salvamento (debounced) na nuvem
 // - getValue: função que retorna o valor atual (serializável em JSON) a ser salvo
 // - applyRemote: função chamada quando chega uma atualização de outro funcionário (via Realtime) ou no carregamento inicial
+// JSON com chaves ordenadas — o Postgres (jsonb) devolve as chaves em outra ordem, então comparar
+// o JSON.stringify "cru" nunca bateria. Usado pra reconhecer o "eco" do nosso próprio salvamento.
+function stableStringify(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) === undefined ? 'null' : JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+  return '{' + Object.keys(v).filter((k) => v[k] !== undefined).sort().map((k) => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+}
+
 function useCloudSync(key, deps, getValue, applyRemote) {
   const isApplyingRemote = React.useRef(false);
+  // Últimos valores que ESTE navegador enviou — o Realtime devolve cada salvamento como evento;
+  // se esse eco chegasse atrasado (rede lenta) depois de uma nova marcação, ele sobrescrevia a
+  // marcação nova com a versão antiga e o check "desmarcava sozinho".
+  const recentSaved = React.useRef([]);
+  // Aplica um valor remoto; se applyRemote devolver true (manteve algo local mais novo que a
+  // nuvem), deixa o efeito de salvamento rodar pra empurrar o valor mesclado de volta.
+  const applyRemoteSafe = (value) => {
+    isApplyingRemote.current = true;
+    const pushBack = applyRemote(value);
+    if (pushBack === true) isApplyingRemote.current = false;
+  };
   const saveTimer = React.useRef(null);
   const didInit = React.useRef(false);
 
@@ -458,8 +477,7 @@ function useCloudSync(key, deps, getValue, applyRemote) {
             // novo. Em vez de descartar a edição, sobe o valor local atual pra nuvem.
             await sb.from(APP_STATE_TABLE).upsert({ key, value: getValue(), updated_at: new Date().toISOString() });
           } else {
-            isApplyingRemote.current = true;
-            applyRemote(data.value);
+            applyRemoteSafe(data.value);
           }
         } else {
           // Ainda não existe registro para essa chave: sobe o valor local atual como semente inicial
@@ -483,9 +501,10 @@ function useCloudSync(key, deps, getValue, applyRemote) {
           // ignora essa atualização por enquanto: o nosso próprio salvamento (já na fila) vai
           // resolver sozinho, e qualquer atualização remota futura, depois que a fila esvaziar,
           // continua sendo aplicada normalmente.
+          // Eco do nosso próprio salvamento? Ignora (já está no estado local).
+          try { if (recentSaved.current.includes(stableStringify(payload.new.value))) return; } catch (e) {}
           if (saveTimer.current) return;
-          isApplyingRemote.current = true;
-          applyRemote(payload.new.value);
+          applyRemoteSafe(payload.new.value);
         }
       })
       .subscribe();
@@ -506,7 +525,12 @@ function useCloudSync(key, deps, getValue, applyRemote) {
       // Marca que não há mais salvamento pendente ANTES de disparar o upsert — é esse sinal que
       // o handler do Realtime acima usa pra saber se pode aplicar atualizações remotas de novo.
       saveTimer.current = null;
-      sb.from(APP_STATE_TABLE).upsert({ key, value: getValue(), updated_at: new Date().toISOString() })
+      const valueToSave = getValue();
+      try {
+        recentSaved.current.push(stableStringify(valueToSave));
+        if (recentSaved.current.length > 6) recentSaved.current.shift();
+      } catch (e) {}
+      sb.from(APP_STATE_TABLE).upsert({ key, value: valueToSave, updated_at: new Date().toISOString() })
         .then(({ error }) => { if (error) console.error(`[Supabase] Falha ao salvar "${key}"`, error); });
     }, 500);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
@@ -691,6 +715,24 @@ const INITIAL_PRODUCTION = [
 // Migração: o código que era chamado "MC01" foi renomeado pra "MC01A" (nome certo).
 // Isso pega registros antigos que ainda tenham valor salvo em codes.MC01 e move pra codes.MC01A,
 // sem perder o que já foi preenchido.
+// Mescla a lista de Produção vinda da nuvem com a local: se o FEITO de uma linha foi alterado
+// aqui mais recentemente (doneAt) do que a versão que chegou, mantém a marcação local — assim um
+// salvamento atrasado/antigo de outra aba ou colega não "desmarca" o que você acabou de marcar.
+function mergeRemoteProduction(local, remote) {
+  if (!Array.isArray(remote)) return { merged: remote, diverged: false };
+  const localById = new Map((Array.isArray(local) ? local : []).map((p) => [p.id, p]));
+  let diverged = false;
+  const merged = remote.map((r) => {
+    const l = localById.get(r.id);
+    if (l && (l.doneAt || 0) > (r.doneAt || 0) && !!l.done !== !!r.done) {
+      diverged = true;
+      return { ...r, done: l.done, doneAt: l.doneAt };
+    }
+    return r;
+  });
+  return { merged, diverged };
+}
+
 function migrateProductionCodes(list) {
   if (!Array.isArray(list)) return list;
   let changed = false;
@@ -3454,6 +3496,8 @@ function ProductionDashboard() {
     }
     return INITIAL_PRODUCTION;
   });
+  const productionListRef = React.useRef(productionList);
+  productionListRef.current = productionList;
   const [searchProd, setSearchProd] = useState("");
   const [showProdModal, setShowProdModal] = useState(false);
   const [showPasteImportModal, setShowPasteImportModal] = useState(false);
@@ -3501,7 +3545,11 @@ function ProductionDashboard() {
       console.error('Erro ao salvar lista de produção:', e);
     }
   }, [productionList]);
-  useCloudSync('production_list', [productionList], () => productionList, (v) => setProductionList(migrateProductionCodes(v)));
+  useCloudSync('production_list', [productionList], () => productionList, (v) => {
+    const { merged, diverged } = mergeRemoteProduction(productionListRef.current, migrateProductionCodes(v));
+    setProductionList(Array.isArray(merged) ? [...merged] : merged);
+    return diverged;
+  });
 
   // Grava automaticamente no localStorage sempre que 'projects' for alterado
   useEffect(() => {
@@ -3974,7 +4022,7 @@ function ProductionDashboard() {
   const [prodDoneFilter, setProdDoneFilter] = useState("ALL"); // "ALL" | "PENDING" | "DONE"
 
   const toggleProdDone = (id) => {
-    setProductionList(prev => prev.map(p => p.id === id ? { ...p, done: !p.done } : p));
+    setProductionList(prev => prev.map(p => p.id === id ? { ...p, done: !p.done, doneAt: Date.now() } : p));
   };
 
   // Progresso por data: quantos registros existem em cada dia e quantos já foram marcados
