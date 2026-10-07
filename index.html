@@ -3510,6 +3510,28 @@ function ProductionDashboard() {
   const [copiedRowId, setCopiedRowId] = useState(null);
 
   // ===== COPIAR TEXTO PRONTO (LOCAL + SPLICE + CÓDIGOS) PARA COLAR NA AUTOMAÇÃO =====
+  // Copia um texto qualquer de uma célula (ex: FIBER / PENDINGS) e pisca "Copiado!" no botão dela.
+  const copyCellText = async (text, marker) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (e2) { console.error('Falha ao copiar', e2); return; }
+    }
+    setCopiedRowId(marker);
+    setTimeout(() => setCopiedRowId((id) => (id === marker ? null : id)), 1500);
+  };
+
   const copyProdToClipboard = async (item) => {
     const asbuiltText = computeAsbuiltFormat(item.codes, allCodeFields);
     const lines = [item.location, item.splice ? `#${item.splice}` : '', asbuiltText].filter(Boolean);
@@ -5274,8 +5296,30 @@ function ProductionDashboard() {
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
                           <input type="checkbox" checked={isDone} onChange={() => toggleProdDone(item.id)} title="Marcar como já produzido/concluído" style={{ cursor: "pointer", width: 16, height: 16, accentColor: C.green }} />
                         </td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none", whiteSpace: "pre-wrap", maxWidth: 220, fontSize: 10 }}>{item.daily || '—'}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.amber, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.pendings || '—'}</td>
+                        {[["daily", "daily"]].map(([fld]) => { const txt = item[fld] || ""; const mk = `${item.id}:${fld}`; return (
+                          <td key={fld} style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, width: 150, margin: "0 auto" }}>
+                              <span title={txt} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left", fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{txt || '—'}</span>
+                              {txt && (
+                                <button onClick={() => copyCellText(txt, mk)} title="Copiar texto completo"
+                                  style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, background: copiedRowId === mk ? C.green : C.panel2, color: copiedRowId === mk ? "#000" : C.textDim, border: `1px solid ${copiedRowId === mk ? C.green : C.border2}`, borderRadius: 4, padding: "3px 7px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                  <Copy size={10} /> {copiedRowId === mk ? t('Copiado!') : t('Copiar')}
+                                </button>
+                              )}
+                            </div>
+                          </td>); })}
+                        {[["pendings", "pendings"]].map(([fld]) => { const txt = item[fld] || ""; const mk = `${item.id}:${fld}`; return (
+                          <td key={fld} style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, width: 150, margin: "0 auto" }}>
+                              <span title={txt} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left", color: C.amber, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{txt || '—'}</span>
+                              {txt && (
+                                <button onClick={() => copyCellText(txt, mk)} title="Copiar texto completo"
+                                  style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, background: copiedRowId === mk ? C.green : C.panel2, color: copiedRowId === mk ? "#000" : C.textDim, border: `1px solid ${copiedRowId === mk ? C.green : C.border2}`, borderRadius: 4, padding: "3px 7px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                  <Copy size={10} /> {copiedRowId === mk ? t('Copiado!') : t('Copiar')}
+                                </button>
+                              )}
+                            </div>
+                          </td>); })}
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.date}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text, textDecoration: isDone ? "line-through" : "none" }}>{item.map}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.location}</td>
