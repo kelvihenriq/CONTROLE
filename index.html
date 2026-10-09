@@ -757,6 +757,270 @@ function toNumOrBlank(v) {
   return Number.isFinite(n) ? n : v;
 }
 
+// ===== INVOICE (.XLSX) — réplica fiel do modelo da empresa (aba "DADOS") =====
+// Ordem fixa das colunas de código do modelo (H..X). Códigos usados no site que não estão nessa
+// lista só entram (no fim, depois do AS19) se tiverem total > 0 — assim nada some do invoice.
+const INVOICE_TEMPLATE_CODES = ['FS01', 'FS02', 'FS03', 'FS07A', 'FS16', 'FS04', 'FS08', 'US01', 'AS24', 'MC01A', 'MC09', 'FS10', 'FS14', 'FS15', 'ER01', 'ER03', 'AS19'];
+
+function buildInvoiceWorkbook(ExcelJS, ctx) {
+  const { companyText, titleText, rows, codeFields, prices, normDate, toNum } = ctx;
+
+  const colLetter = (n) => {
+    let s = '';
+    while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+    return s;
+  };
+
+  // ----- colunas de código: as 17 do modelo + extras com movimento -----
+  const fieldByLabel = new Map(codeFields.map((f) => [String(f.label).trim().toUpperCase(), f]));
+  const totalOf = (f) => rows.reduce((sum, it) => sum + (Number(it.codes?.[f.id]) || 0), 0);
+  const codeCols = INVOICE_TEMPLATE_CODES.map((label) => {
+    const f = fieldByLabel.get(label);
+    return { label, id: f ? f.id : null };
+  });
+  codeFields.forEach((f) => {
+    if (!INVOICE_TEMPLATE_CODES.includes(String(f.label).trim().toUpperCase()) && totalOf(f) > 0) {
+      codeCols.push({ label: f.label, id: f.id });
+    }
+  });
+  codeCols.forEach((c) => {
+    c.total = c.id ? totalOf({ id: c.id }) : 0;
+    // código que existe no site → preço cadastrado lá; código só do modelo → $10 (padrão do modelo)
+    c.price = c.id ? (Number(prices?.[c.id]) || 0) : 10;
+  });
+
+  const nMain = 7;
+  const nCode = codeCols.length;
+  const L = nMain + nCode; // total de colunas (24 no modelo)
+  const firstCode = nMain + 1; // coluna H
+
+  // ----- estilos (iguais ao modelo) -----
+  const solid = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+  const B = (style) => ({ style, color: { argb: 'FF000000' } });
+  const TNR = (size, extra) => ({ name: 'Times New Roman', size, ...(extra || {}) });
+  const BLACK = { argb: 'FF000000' };
+  const WHITE = { argb: 'FFFFFFFF' };
+  const CLR_COMPANY = 'FFD9E2F3', CLR_BAND_B = 'FFB4C6E7', CLR_TITLE = 'FF8EAADB', CLR_NAVY = 'FF1F3864';
+  const CLR_MID = 'FF9CC2E5', CLR_HEAD = 'FF2F5496';
+  const FMT_PRICE = '"$"\\ #,##0.00;[Red]\\-"$"\\ #,##0.00';
+  const FMT_SUB = '_-[$$-409]* #,##0.00_ ;_-[$$-409]* \\-#,##0.00\\ ;_-[$$-409]* "-"??_ ;_-@_ ';
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('DADOS', {
+    properties: { defaultRowHeight: 15, defaultColWidth: 11.22 },
+    pageSetup: {
+      orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+      margins: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75, header: 0, footer: 0 },
+    },
+  });
+
+  // ----- larguras (modelo) -----
+  const widths = [8.44, 14.11, 18, 9.56, 18.89, 10.67, 11];
+  for (let c = 1; c <= L; c++) {
+    let w;
+    if (c <= nMain) w = widths[c - 1];
+    else w = (c === 11) ? 8.67 : 6.89; // K = 8.67, o resto dos códigos = 6.89
+    ws.getColumn(c).width = w;
+  }
+
+  // ----- LINHAS 1-3: cabeçalho da empresa -----
+  ws.mergeCells(1, 1, 3, L);
+  const company = ws.getCell(1, 1);
+  company.value = companyText;
+  company.fill = solid(CLR_COMPANY);
+  company.font = TNR(16, { bold: true });
+  company.alignment = { horizontal: 'center', wrapText: true };
+  [1, 2, 3].forEach((r) => { ws.getRow(r).height = 30; ws.getCell(r, 1).border = { left: B('thin') }; });
+
+  // ----- LINHAS 4-5: ocultas (como no modelo) -----
+  [4, 5].forEach((r) => { ws.getRow(r).height = 15; ws.getRow(r).hidden = true; });
+
+  // ----- LINHA 6: barra navy -----
+  ws.mergeCells(6, 1, 6, L);
+  ws.getCell(6, 1).fill = solid(CLR_NAVY);
+  ws.getCell(6, 1).border = { left: B('thin') };
+  ws.getRow(6).height = 15;
+
+  // ----- LINHA 7: título -----
+  ws.mergeCells(7, 1, 7, L);
+  const title = ws.getCell(7, 1);
+  title.value = titleText;
+  title.fill = solid(CLR_TITLE);
+  title.font = TNR(16, { bold: true });
+  title.alignment = { horizontal: 'center', vertical: 'middle' };
+  title.border = { left: B('thin') };
+  ws.getRow(7).height = 21.75;
+
+  // ----- LINHA 8: cabeçalhos das colunas -----
+  const headers = ['DATE', 'MAP', 'LOCATION', 'SPLICE', 'NAME', 'TYPE', 'TYPE', ...codeCols.map((c) => c.label)];
+  for (let c = 1; c <= L; c++) {
+    const cell = ws.getCell(8, c);
+    cell.value = headers[c - 1];
+    cell.fill = solid('FFFFFFFF');
+    cell.font = TNR(12);
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.border = { top: B('medium'), bottom: B('medium'), left: B('medium'), right: B('medium') };
+  }
+
+  // ----- LINHAS 9+: dados, com faixas alternadas até a linha 248 (como o modelo) -----
+  const lastDataRow = 8 + rows.length;
+  const bandEnd = Math.max(248, lastDataRow);
+  // Como no modelo: ficam visíveis as linhas até a 50 (ou até a última linha com dado, se passar
+  // disso); as faixas em branco restantes (51..248) ficam OCULTAS e o bloco de totais aparece depois.
+  const visibleEnd = Math.max(50, lastDataRow);
+  const bandFill = (r) => solid(r % 2 === 1 ? CLR_COMPANY : CLR_BAND_B);
+  for (let r = 9; r <= bandEnd; r++) {
+    const row = ws.getRow(r);
+    row.height = 15.75;
+    if (r > visibleEnd) row.hidden = true;
+    for (let c = 1; c <= L; c++) {
+      const cell = row.getCell(c);
+      cell.fill = bandFill(r);
+      const calibri = (c === 1 || c === 3);
+      cell.font = calibri ? { name: 'Calibri', size: 11, color: BLACK } : TNR(10);
+      cell.alignment = calibri ? { horizontal: 'center' } : { horizontal: 'center', vertical: 'middle' };
+      cell.border = { top: B('thin'), bottom: B('thin'), left: B('thin'), right: B('thin') };
+      if (c === 2 || c === 3) cell.numFmt = '@';
+    }
+  }
+  rows.forEach((item, idx) => {
+    const row = ws.getRow(9 + idx);
+    const dateCell = row.getCell(1);
+    const iso = normDate ? normDate(item.date) : '';
+    if (iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+      // meio-dia UTC evita a data "escorregar" um dia por fuso horário
+      dateCell.value = new Date(`${iso}T12:00:00Z`);
+      dateCell.numFmt = 'mm/dd/yy'; // mesmo texto que aparece no site (ex: 10/06/26)
+    } else {
+      dateCell.value = item.date || '';
+    }
+    row.getCell(2).value = item.map || '';
+    row.getCell(3).value = item.location || '';
+    const sp = toNum(item.splice);
+    row.getCell(4).value = sp === '' ? (item.splice || '') : sp;
+    row.getCell(5).value = item.name || '';
+    row.getCell(6).value = item.type || '';
+    row.getCell(7).value = item.typeEnd || '';
+    codeCols.forEach((cc, i) => {
+      if (!cc.id) return;
+      const v = toNum(item.codes?.[cc.id]);
+      if (v !== '') row.getCell(firstCode + i).value = v;
+    });
+  });
+
+  // ===== BLOCO TOTAL / PRICE (começa 4 linhas depois do fim das faixas: linha 252 no modelo) =====
+  const tr = bandEnd + 4;           // linha dos rótulos
+  const sumRow = tr + 1;            // linha dos totais
+  const priceRow = tr + 2;          // linha dos preços
+  const sumTo = bandEnd + 1;        // o modelo soma até uma linha depois das faixas (H9:H249)
+  ws.getRow(tr).height = 15.75;
+  ws.getRow(sumRow).height = 16.5;
+  ws.getRow(priceRow).height = 16.5;
+  ws.getRow(tr + 3).height = 15;
+
+  ws.mergeCells(tr, 7, sumRow, 7);
+  const gTotal = ws.getCell(tr, 7);
+  gTotal.value = 'TOTAL';
+  gTotal.fill = solid(CLR_MID);
+  gTotal.font = TNR(12);
+  gTotal.alignment = { horizontal: 'center', vertical: 'middle' };
+  gTotal.border = { left: B('thick'), top: B('thick') };
+  ws.getCell(sumRow, 7).border = { left: B('thick'), bottom: B('thick') };
+
+  const gPrice = ws.getCell(priceRow, 7);
+  gPrice.value = 'PRICE';
+  gPrice.font = TNR(12);
+  gPrice.alignment = { horizontal: 'center', vertical: 'middle' };
+  gPrice.border = { left: B('thick'), top: B('thick'), bottom: B('thick') };
+
+  codeCols.forEach((cc, i) => {
+    const c = firstCode + i;
+    const cl = colLetter(c);
+    const first = i === 0, last = i === nCode - 1;
+
+    const lab = ws.getCell(tr, c);
+    lab.value = { formula: `${cl}8`, result: cc.label };
+    lab.fill = solid(CLR_HEAD);
+    lab.font = TNR(10, { color: WHITE });
+    lab.alignment = { horizontal: 'center', vertical: 'middle' };
+    lab.numFmt = '0.00';
+    lab.border = { top: B('medium'), left: first ? B('medium') : undefined, right: last ? B('medium') : B('thick') };
+
+    const sum = ws.getCell(sumRow, c);
+    sum.value = { formula: `SUM(${cl}9:${cl}${sumTo})`, result: cc.total };
+    sum.fill = solid(CLR_MID);
+    sum.font = TNR(10);
+    sum.alignment = { horizontal: 'center', vertical: 'middle' };
+    sum.numFmt = '0.00';
+    sum.border = { top: B('thick'), bottom: B('thick'), left: B('medium'), right: last ? B('medium') : B('thick') };
+
+    const pr = ws.getCell(priceRow, c);
+    pr.value = cc.price;
+    pr.font = TNR(10);
+    pr.alignment = { horizontal: 'center', vertical: 'middle' };
+    pr.numFmt = FMT_PRICE;
+    pr.border = { top: B('thick'), bottom: B('medium'), left: first ? B('medium') : B('thick'), right: last ? B('medium') : B('thin') };
+  });
+
+  // ----- TABELA VERTICAL (código / valor) nas 4 últimas colunas, abaixo do bloco (linha 256 no modelo) -----
+  const sr = tr + 4;
+  const cLab = L - 3, cVal = L - 1; // U:V e W:X
+  let grand = 0;
+  codeCols.forEach((cc, i) => {
+    const r = sr + i;
+    const cl = colLetter(firstCode + i);
+    ws.getRow(r).height = 24;
+    ws.mergeCells(r, cLab, r, cLab + 1);
+    ws.mergeCells(r, cVal, r, cVal + 1);
+    const a = ws.getCell(r, cLab);
+    a.value = { formula: `${cl}8`, result: cc.label };
+    a.fill = solid(CLR_MID);
+    a.font = TNR(12);
+    a.alignment = { horizontal: 'center', vertical: 'middle' };
+    const brd = { top: B('medium'), bottom: B('medium'), left: B('medium') };
+    a.border = brd;
+    ws.getCell(r, cLab + 1).border = { top: B('medium'), bottom: B('medium') };
+    const sub = cc.total * cc.price;
+    grand += sub;
+    const v = ws.getCell(r, cVal);
+    v.value = { formula: `${cl}${sumRow}*${cl}${priceRow}`, result: sub };
+    v.fill = solid(CLR_MID);
+    v.font = TNR(12);
+    v.alignment = { horizontal: 'center', vertical: 'middle' };
+    v.numFmt = FMT_SUB;
+    v.border = { top: B('medium'), bottom: B('medium'), left: B('medium'), right: B('medium') };
+    ws.getCell(r, cVal + 1).border = { top: B('medium'), bottom: B('medium'), right: B('medium') };
+  });
+
+  const gr = sr + nCode;
+  ws.getRow(gr).height = 36;
+  ws.getRow(gr + 1).height = 15;
+  ws.mergeCells(gr, cLab, gr, cLab + 1);
+  ws.mergeCells(gr, cVal, gr, cVal + 1);
+  const tl = ws.getCell(gr, cLab);
+  tl.value = 'TOTAL';
+  tl.fill = solid(CLR_NAVY);
+  tl.font = TNR(16, { color: WHITE });
+  tl.alignment = { horizontal: 'center', vertical: 'middle' };
+  tl.border = { top: B('medium'), bottom: B('medium'), left: B('medium') };
+  ws.getCell(gr, cLab + 1).border = { top: B('medium'), bottom: B('medium') };
+  const tv = ws.getCell(gr, cVal);
+  tv.value = { formula: `SUM(${colLetter(cVal)}${sr}:${colLetter(cVal + 1)}${gr - 1})`, result: grand };
+  tv.fill = solid(CLR_NAVY);
+  tv.font = TNR(16, { color: WHITE });
+  tv.alignment = { horizontal: 'center', vertical: 'middle' };
+  tv.numFmt = FMT_SUB;
+  tv.border = { bottom: B('medium'), right: B('medium') };
+  ws.getCell(gr, cVal + 1).border = { bottom: B('medium'), right: B('medium') };
+
+  // filtro no cabeçalho, como o modelo
+  ws.autoFilter = { from: { row: 8, column: 1 }, to: { row: Math.max(lastDataRow, 9), column: L } };
+
+  return { wb, grandTotal: grand };
+}
+
+
+
 function computeAsbuiltFormat(codes = {}, fields = CODE_FIELDS) {
   const parts = [];
   fields.forEach(field => {
@@ -4458,228 +4722,46 @@ function ProductionDashboard() {
     URL.revokeObjectURL(url);
   };
 
-  // ===== EXPORTAR INVOICE (.XLSX) — dados da produção em cima + fechamento (TOTAL/PRICE/SUBTOTAL) embaixo =====
+  // ===== EXPORTAR INVOICE (.XLSX) — mesmo layout/cores do modelo da empresa (aba "DADOS") =====
+  // O desenho da planilha (cabeçalho, faixas azuis, bloco TOTAL/PRICE e tabela de valores) está em
+  // buildInvoiceWorkbook(), no topo do arquivo. Aqui só montamos título, nome do arquivo e baixamos.
   const exportInvoiceXLSX = async () => {
     if (!window.ExcelJS) {
       alert('Biblioteca de exportação Excel ainda carregando, tente novamente em instantes.');
       return;
     }
-    const mainHeaders = ["DATE", "MAP", "LOCATION", "SPLICE", "NAME", "TYPE", "TYPE2"];
-    const codeHeaders = allCodeFields.map((f) => f.label);
-    const headers = [...mainHeaders, ...codeHeaders];
-    const nMain = mainHeaders.length;
-    const nCode = codeHeaders.length;
-    const totalCols = headers.length;
-    const colLetter = (n) => {
-      let s = '';
-      while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
-      return s;
-    };
-    // Data no padrão americano MM-DD-AA usado no modelo (ex: 08-04-26 = 04/agosto/2026) —
-    // é o formato que eles usam, não o brasileiro DD-MM-AA.
+    // Data no padrão americano MM-DD-AA usado no modelo (ex: 10-07-26 = 7 de outubro de 2026)
     const toUSDate = (isoDate) => {
       if (!isoDate) return '';
-      const parts = isoDate.split('-');
-      if (parts.length !== 3) return isoDate;
+      const parts = String(isoDate).split('-');
+      if (parts.length !== 3) return String(isoDate);
       const [y, m, d] = parts;
       return `${m}-${d}-${y.slice(-2)}`;
     };
 
-    const wb = new window.ExcelJS.Workbook();
-    const ws = wb.addWorksheet('DADOS');
-
-    // ----- CORES (fiéis ao modelo real da empresa) -----
-    const companyFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E2F3' } };
-    const navyFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
-    const titleFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF8EAADB' } };
-    const bandFillA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E2F3' } };
-    const bandFillB = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB4C6E7' } };
-    const thinBorder = { style: 'thin', color: { argb: 'FF000000' } };
-    const mediumBorder = { style: 'medium', color: { argb: 'FF000000' } };
-
-    // ----- LINHAS 1-3: CABEÇALHO DA EMPRESA (mesclado) -----
-    ws.mergeCells(1, 1, 3, totalCols);
-    const companyCell = ws.getRow(1).getCell(1);
-    companyCell.value = COMPANY_HEADER_TEXT;
-    companyCell.fill = companyFill;
-    companyCell.font = { name: 'Times New Roman', bold: true, size: 16 };
-    companyCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    companyCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    [1, 2, 3].forEach((r) => { ws.getRow(r).height = 30; });
-
-    // ----- LINHAS 4-5: RESPIRO EM BRANCO -----
-    [4, 5].forEach((r) => { ws.getRow(r).height = 15; });
-
-    // ----- LINHA 6: BARRA NAVY -----
-    ws.mergeCells(6, 1, 6, totalCols);
-    ws.getRow(6).getCell(1).fill = navyFill;
-    ws.getRow(6).height = 15;
-
-    // ----- LINHA 7: TÍTULO "N: 0000 / DAY: ..." — usa o período selecionado na Lista de Produção -----
-    const dayLabel = (() => {
-      if (rangeFrom && rangeTo) return rangeFrom === rangeTo ? toUSDate(rangeFrom) : `${toUSDate(rangeFrom)} A ${toUSDate(rangeTo)}`;
-      if (rangeFrom) return toUSDate(rangeFrom);
-      if (rangeTo) return toUSDate(rangeTo);
-      const dates = invoiceSourceRows.map((r) => r.date).filter(Boolean).sort();
-      return toUSDate(dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10));
-    })();
-    ws.mergeCells(7, 1, 7, totalCols);
-    const titleCell = ws.getRow(7).getCell(1);
-    titleCell.value = `N: 0000 / WEEK: ${dayLabel}`;
-    titleCell.fill = titleFill;
-    titleCell.font = { name: 'Times New Roman', bold: true, size: 16 };
-    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-    titleCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    ws.getRow(7).height = 21.75;
-
-    // ----- LINHA 8: CABEÇALHOS DAS COLUNAS -----
-    ws.getRow(8).values = headers;
-    for (let c = 1; c <= totalCols; c++) {
-      const cell = ws.getRow(8).getCell(c);
-      cell.font = { name: 'Times New Roman', size: 12 };
-      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      cell.border = { top: mediumBorder, bottom: mediumBorder, left: mediumBorder, right: mediumBorder };
+    // Período: o selecionado na Lista de Produção; sem período, usa a menor e a maior data das linhas
+    let startIso = rangeFrom || '';
+    let endIso = rangeTo || '';
+    if (!startIso && !endIso) {
+      const dates = invoiceSourceRows.map((r) => normDateForCompare(r.date)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+      if (dates.length) { startIso = dates[0]; endIso = dates[dates.length - 1]; }
+      else { startIso = endIso = new Date().toISOString().slice(0, 10); }
     }
+    if (!startIso) startIso = endIso;
+    if (!endIso) endIso = startIso;
+    const isDay = startIso === endIso;
+    const periodLabel = isDay ? toUSDate(startIso) : `${toUSDate(startIso)} TO ${toUSDate(endIso)}`;
+    const titleText = `N: 0000 / ${isDay ? 'DAY' : 'WEEK'} ${periodLabel}`;
 
-    // ----- LINHAS 9+: DADOS -----
-    invoiceSourceRows.forEach((item, idx) => {
-      const r = 9 + idx;
-      const row = ws.getRow(r);
-      const dateCell = row.getCell(1);
-      // Mesmo problema de formato que já vimos na Produção: quando a data vem direto da
-      // planilha do Drive ela é texto "MM/DD/YY" (ex: "09/01/26"), não "YYYY-MM-DD". Passar
-      // isso direto pro construtor de Date() gera uma data inválida (Invalid Date) — e o Excel
-      // exibe isso como "#NUM!" na coluna DATE. Por isso normalizamos pra ISO antes de criar a
-      // data do Excel.
-      const isoDate = normDateForCompare(item.date);
-      if (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
-        dateCell.value = new Date(`${isoDate}T00:00:00`);
-        dateCell.numFmt = 'mm/dd/yy'; // formato americano, igual à planilha original deles
-      } else {
-        dateCell.value = item.date || '';
-      }
-      row.getCell(2).value = item.map || '';
-      row.getCell(3).value = item.location || '';
-      row.getCell(4).value = item.splice || '';
-      row.getCell(5).value = item.name || '';
-      row.getCell(6).value = item.type || '';
-      row.getCell(7).value = item.typeEnd || '';
-      allCodeFields.forEach((f, i) => { row.getCell(nMain + 1 + i).value = toNumOrBlank(item.codes?.[f.id]); });
-      row.height = 15.75;
+    const { wb } = buildInvoiceWorkbook(window.ExcelJS, {
+      companyText: COMPANY_HEADER_TEXT,
+      titleText,
+      rows: invoiceSourceRows,
+      codeFields: allCodeFields,
+      prices: invoicePrices,
+      normDate: normDateForCompare,
+      toNum: toNumOrBlank,
     });
-
-    const lastDataRow = 8 + invoiceSourceRows.length;
-
-    // Zebra: faixas alternadas D9E2F3 / B4C6E7, uniformes em todas as colunas
-    for (let r = 9; r <= lastDataRow; r++) {
-      const band = (r % 2 === 1) ? bandFillA : bandFillB;
-      for (let c = 1; c <= totalCols; c++) {
-        const cell = ws.getRow(r).getCell(c);
-        cell.fill = band;
-        cell.font = { name: 'Times New Roman', size: 10 };
-        cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-        cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      }
-    }
-
-    // ===== BLOCO 2: FECHAMENTO / INVOICE (TOTAL, PRICE e tabela vertical) =====
-    const miniHeaderFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2F5496' } };
-    const miniTotalFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF9CC2E5' } };
-
-    const miniStartRow = lastDataRow + 3; // deixa 2 linhas em branco de respiro
-    const miniStartCol = nMain + 1;       // alinha as colunas dos códigos com o bloco de cima
-
-    // Cabeçalho com os códigos
-    for (let i = 0; i < nCode; i++) {
-      const cell = ws.getRow(miniStartRow).getCell(miniStartCol + i);
-      cell.value = codeHeaders[i];
-      cell.fill = miniHeaderFill;
-      cell.font = { name: 'Times New Roman', bold: true, color: { argb: 'FFFFFFFF' } };
-      cell.alignment = { horizontal: 'center', vertical: 'middle' };
-      cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    }
-    // Rótulo "TOTAL" / "PRICE" na coluna anterior aos códigos
-    ws.getRow(miniStartRow + 1).getCell(miniStartCol - 1).value = 'TOTAL';
-    ws.getRow(miniStartRow + 2).getCell(miniStartCol - 1).value = 'PRICE';
-
-    invoiceRows.forEach((r, i) => {
-      const col = miniStartCol + i;
-      const totalCell = ws.getRow(miniStartRow + 1).getCell(col);
-      // Fórmula de verdade (=SOMA), não um número fixo — assim, se alguém editar um valor na
-      // planilha depois de exportada, o TOTAL recalcula sozinho em vez de ficar desatualizado.
-      // "result" é só o valor em cache pra já aparecer certo antes do Excel recalcular sozinho.
-      const colL = colLetter(col);
-      totalCell.value = { formula: `SUM(${colL}9:${colL}${lastDataRow})`, result: r.total };
-      const priceCell = ws.getRow(miniStartRow + 2).getCell(col);
-      priceCell.value = r.price;
-      priceCell.numFmt = '"$" #,##0.00';
-      totalCell.fill = miniTotalFill;
-      totalCell.font = { name: 'Times New Roman', bold: true };
-      totalCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      totalCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-      // PRICE não tem preenchimento (fica branco), igual ao modelo
-      priceCell.font = { name: 'Times New Roman', bold: true };
-      priceCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      priceCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    });
-    const totalLabelCell = ws.getRow(miniStartRow + 1).getCell(miniStartCol - 1);
-    totalLabelCell.fill = miniTotalFill;
-    totalLabelCell.font = { name: 'Times New Roman', bold: true };
-    totalLabelCell.alignment = { horizontal: 'left', vertical: 'middle' };
-    totalLabelCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    const priceLabelCell = ws.getRow(miniStartRow + 2).getCell(miniStartCol - 1);
-    priceLabelCell.font = { name: 'Times New Roman', bold: true };
-    priceLabelCell.alignment = { horizontal: 'left', vertical: 'middle' };
-    priceLabelCell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-
-    // ----- TABELA VERTICAL (CÓDIGO / $), logo abaixo da mini-tabela, alinhada para terminar na última coluna -----
-    const vStartRow = miniStartRow + 4; // 1 linha em branco de respiro após PRICE
-    const valueCol = totalCols;         // coluna de valores termina alinhada com a última coluna
-    const codeCol = totalCols - 1;      // coluna de rótulos (código) logo à esquerda
-    invoiceRows.forEach((r, idx) => {
-      const row = ws.getRow(vStartRow + idx);
-      const totalMiniCol = colLetter(miniStartCol + idx);
-      row.getCell(codeCol).value = r.label;
-      // Fórmula: TOTAL (linha do mini-quadro acima) × PRICE (linha logo abaixo dele) — em vez de
-      // um número já calculado, assim ela acompanha se o TOTAL ou o PRICE mudarem depois.
-      row.getCell(valueCol).value = { formula: `${totalMiniCol}${miniStartRow + 1}*${totalMiniCol}${miniStartRow + 2}`, result: r.subtotal };
-      row.getCell(codeCol).fill = miniTotalFill;
-      row.getCell(valueCol).fill = miniTotalFill;
-      row.getCell(codeCol).font = { name: 'Times New Roman', bold: true };
-      row.getCell(valueCol).font = { name: 'Times New Roman', bold: true };
-      row.getCell(codeCol).alignment = { horizontal: 'center', vertical: 'middle' };
-      row.getCell(valueCol).alignment = { horizontal: 'right', vertical: 'middle' };
-      row.getCell(valueCol).numFmt = '"$" #,##0.00';
-      row.getCell(codeCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-      row.getCell(valueCol).border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-    });
-
-    const subtotalRow = vStartRow + invoiceRows.length + 2;
-    ws.getRow(subtotalRow).getCell(codeCol).value = 'TOTAL';
-    // Soma de verdade da coluna de subtotais logo acima — não um número fixo.
-    const valueColL = colLetter(valueCol);
-    ws.getRow(subtotalRow).getCell(valueCol).value = {
-      formula: `SUM(${valueColL}${vStartRow}:${valueColL}${vStartRow + invoiceRows.length - 1})`,
-      result: invoiceGrandTotal,
-    };
-    ws.getRow(subtotalRow).getCell(codeCol).fill = navyFill;
-    ws.getRow(subtotalRow).getCell(valueCol).fill = navyFill;
-    ws.getRow(subtotalRow).getCell(codeCol).font = { name: 'Times New Roman', bold: true, color: { argb: 'FFFFFFFF' }, size: 16 };
-    ws.getRow(subtotalRow).getCell(valueCol).font = { name: 'Times New Roman', bold: true, color: { argb: 'FFFFFFFF' }, size: 16 };
-    ws.getRow(subtotalRow).getCell(codeCol).alignment = { horizontal: 'center', vertical: 'middle' };
-    ws.getRow(subtotalRow).getCell(valueCol).alignment = { horizontal: 'center', vertical: 'middle' };
-    ws.getRow(subtotalRow).getCell(valueCol).numFmt = '"$" #,##0.00';
-    ws.getRow(subtotalRow).getCell(codeCol).border = { top: mediumBorder, bottom: mediumBorder, left: mediumBorder, right: mediumBorder };
-    ws.getRow(subtotalRow).getCell(valueCol).border = { top: mediumBorder, bottom: mediumBorder, left: mediumBorder, right: mediumBorder };
-
-    // Larguras de coluna (DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE2, códigos...)
-    ws.columns = headers.map((h, i) => ({
-      width: i === 0 ? 12 : i === 1 ? 14 : i === 2 ? 30 : i === 3 ? 12 : i === 4 ? 19 : i === 5 ? 16 : i === 6 ? 13 : 10
-    }));
-
-    // Congela até o cabeçalho de colunas e ativa o filtro no bloco de dados
-    ws.views = [{ state: 'frozen', ySplit: 8 }];
-    ws.autoFilter = `A8:${colLetter(totalCols)}8`;
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -4687,7 +4769,7 @@ function ProductionDashboard() {
     const link = document.createElement('a');
     link.href = url;
     const mapSuffix = selectedMapProd === "ALL" ? "TODOS" : selectedMapProd.replace(/\s+/g, "_");
-    link.download = `Invoice_${mapSuffix}_WEEK_${dayLabel.replace(/\s+/g, "_")}.xlsx`;
+    link.download = `${mapSuffix}_-_INVOICE_${isDay ? 'DAY' : 'WEEK'}_${periodLabel.replace(/\s+/g, "_")}.xlsx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -5261,11 +5343,11 @@ function ProductionDashboard() {
                       <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAllVisible} title="Selecionar/desmarcar todas as linhas visíveis" style={{ cursor: "pointer" }} />
                     </th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: C.greenSoft, color: C.green }} title="Marcar como já produzido/concluído">{t('FEITO')}</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>FIBER</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
+                    <th style={{ padding: "8px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>FIBER</th>
+                    <th style={{ padding: "8px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>PENDINGS</th>
+                    <th style={{ padding: "8px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>DATE</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>MAP</th>
-                    <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>LOCATION</th>
+                    <th style={{ padding: "8px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>LOCATION</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>SPLICE</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>NAME</th>
                     <th style={{ padding: 8, border: `1px solid ${C.border2}`, background: "#1b2a1e", color: C.green }}>TYPE</th>
@@ -5297,32 +5379,32 @@ function ProductionDashboard() {
                           <input type="checkbox" checked={isDone} onChange={() => toggleProdDone(item.id)} title="Marcar como já produzido/concluído" style={{ cursor: "pointer", width: 16, height: 16, accentColor: C.green }} />
                         </td>
                         {[["daily", "daily"]].map(([fld]) => { const txt = item[fld] || ""; const mk = `${item.id}:${fld}`; return (
-                          <td key={fld} style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6, width: 150, margin: "0 auto" }}>
+                          <td key={fld} style={{ padding: "6px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", border: `1px solid ${C.borderSoft}` }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 3, width: "100%" }}>
                               <span title={txt} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left", fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{txt || '—'}</span>
                               {txt && (
-                                <button onClick={() => copyCellText(txt, mk)} title="Copiar texto completo"
-                                  style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, background: copiedRowId === mk ? C.green : C.panel2, color: copiedRowId === mk ? "#000" : C.textDim, border: `1px solid ${copiedRowId === mk ? C.green : C.border2}`, borderRadius: 4, padding: "3px 7px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                                  <Copy size={10} /> {copiedRowId === mk ? t('Copiado!') : t('Copiar')}
+                                <button onClick={() => copyCellText(txt, mk)} title={copiedRowId === mk ? "Copiado!" : "Copiar texto completo"}
+                                  style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, background: copiedRowId === mk ? C.green : C.panel2, color: copiedRowId === mk ? "#000" : C.textDim, border: `1px solid ${copiedRowId === mk ? C.green : C.border2}`, borderRadius: 4, padding: "3px 4px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                  <Copy size={10} />
                                 </button>
                               )}
                             </div>
                           </td>); })}
                         {[["pendings", "pendings"]].map(([fld]) => { const txt = item[fld] || ""; const mk = `${item.id}:${fld}`; return (
-                          <td key={fld} style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}` }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6, width: 150, margin: "0 auto" }}>
+                          <td key={fld} style={{ padding: "6px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", border: `1px solid ${C.borderSoft}` }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 3, width: "100%" }}>
                               <span title={txt} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left", color: C.amber, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{txt || '—'}</span>
                               {txt && (
-                                <button onClick={() => copyCellText(txt, mk)} title="Copiar texto completo"
-                                  style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, background: copiedRowId === mk ? C.green : C.panel2, color: copiedRowId === mk ? "#000" : C.textDim, border: `1px solid ${copiedRowId === mk ? C.green : C.border2}`, borderRadius: 4, padding: "3px 7px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                                  <Copy size={10} /> {copiedRowId === mk ? t('Copiado!') : t('Copiar')}
+                                <button onClick={() => copyCellText(txt, mk)} title={copiedRowId === mk ? "Copiado!" : "Copiar texto completo"}
+                                  style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, background: copiedRowId === mk ? C.green : C.panel2, color: copiedRowId === mk ? "#000" : C.textDim, border: `1px solid ${copiedRowId === mk ? C.green : C.border2}`, borderRadius: 4, padding: "3px 4px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                  <Copy size={10} />
                                 </button>
                               )}
                             </div>
                           </td>); })}
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.date}</td>
+                        <td title={item.date} style={{ padding: "6px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", textOverflow: "ellipsis", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.date}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text, textDecoration: isDone ? "line-through" : "none" }}>{item.map}</td>
-                        <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.location}</td>
+                        <td title={item.location} style={{ padding: "6px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", textOverflow: "ellipsis", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.location}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.splice}</td>
 
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, color: C.accent, textDecoration: isDone ? "line-through" : "none" }}>{item.name}</td>
