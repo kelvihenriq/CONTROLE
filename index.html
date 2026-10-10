@@ -2993,10 +2993,13 @@ function DriveScanTab() {
             mapUsedDateFallback = parsed.usedDateFallback;
           }
 
+          // Nome do mapa "limpo": tira extensão (.xlsx), "PRODUCTION LIST" e "PRODUCTION OLD",
+          // onde quer que apareçam no nome do arquivo, e sobras de traço/ponto no fim.
           const mapName = (f.name || '')
-            .replace(/PRODUCTION\s*LIST/i, '')
-            .replace(/\.(xlsx|xlsm|xls)$/i, '')
-            .replace(/[-–]+\s*$/, '')
+            .replace(/\.(xlsx|xlsm|xls)\b\.?/gi, ' ')
+            .replace(/PRODUCTION\s*(LIST|OLD)/gi, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/[\s\-–.]+$/, '')
             .trim() || f.name;
 
           scanResults.push({
@@ -3296,7 +3299,7 @@ function DriveScanTab() {
                         )}
                       </td>
                       <td style={{ ...tdStyleDrive, fontWeight: 800, color: r.error ? C.textFaint : (r.pendingCount > 0 ? C.red : C.green) }}>
-                        {r.error ? `${t('ERRO:')} ${r.error.slice(0, 60)}` : (r.pendingCount === 0 ? t('EM DIA') : `${r.pendingCount} ${t('linha(s) pendente(s)')}`)}
+                        {r.error ? `${t('ERRO:')} ${r.error.slice(0, 220)}` : (r.pendingCount === 0 ? t('EM DIA') : `${r.pendingCount} ${t('linha(s) pendente(s)')}`)}
                         {r.usedDateFallback && r.pendingCount > 0 && (
                           <span title="Essa planilha não tem nenhum 'END INVOICE' marcado — a contagem usou a data de início do ciclo de faturamento como critério." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
                             {t('por data')}
