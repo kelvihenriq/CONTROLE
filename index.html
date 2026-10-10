@@ -2898,7 +2898,7 @@ function DriveScanTab() {
           const params = new URLSearchParams({
             q,
             pageSize: '100',
-            fields: 'nextPageToken, files(id, name, modifiedTime, webViewLink, size, driveId)',
+            fields: 'nextPageToken, files(id, name, mimeType, modifiedTime, webViewLink, size, driveId)',
             orderBy: 'modifiedTime desc',
             includeItemsFromAllDrives: 'true',
             supportsAllDrives: 'true',
@@ -2936,13 +2936,42 @@ function DriveScanTab() {
         files = await searchFiles(q, corporaParams);
       }
 
+      // Um mesmo mapa pode ter 2+ arquivos na pasta (ex: o Google Sheets novo + o ".xlsx ... PRODUCTION OLD").
+      // Agrupa pelo nome "limpo" do mapa e fica só com o melhor: o que NÃO é "OLD", depois o Google
+      // Sheets nativo, depois o mais recente — assim o antigo não esconde as pendências do novo.
+      const isNativeSheet = (f) => f.mimeType === 'application/vnd.google-apps.spreadsheet';
+      const isOldFile = (f) => /\bOLD\b/i.test(f.name || '');
+      const mapKeyOf = (name) => String(name || '')
+        .toUpperCase()
+        .replace(/\.(XLSX|XLSM|XLS)\b/g, ' ')
+        .replace(/PRODUCTION\s*(LIST|OLD)/g, ' ')
+        .replace(/[^A-Z0-9]+/g, '');
+      {
+        const best = new Map();
+        const rank = (f) => [isOldFile(f) ? 1 : 0, isNativeSheet(f) ? 0 : 1, -(new Date(f.modifiedTime).getTime() || 0)];
+        const better = (a, b) => { const ra = rank(a), rb = rank(b); for (let i = 0; i < ra.length; i++) { if (ra[i] !== rb[i]) return ra[i] < rb[i]; } return false; };
+        files.forEach((f) => {
+          const k = mapKeyOf(f.name);
+          if (!k) { best.set('__' + f.id, f); return; }
+          const cur = best.get(k);
+          if (!cur || better(f, cur)) best.set(k, f);
+        });
+        files = Array.from(best.values());
+      }
+      const keptKeys = new Set(files.map((f) => mapKeyOf(f.name)).filter(Boolean));
+
       setProgress({ done: 0, total: files.length });
 
       const scanResults = [];
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
         try {
-          const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`);
+          // Arquivo .xlsx normal baixa direto (alt=media); Google Sheets nativo não permite isso —
+          // precisa exportar como .xlsx (senão dá erro e o mapa aparece em "falharam ao abrir").
+          const dlUrl = f.mimeType === 'application/vnd.google-apps.spreadsheet'
+            ? `https://www.googleapis.com/drive/v3/files/${f.id}/export?mimeType=${encodeURIComponent('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}`
+            : `https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`;
+          const resp = await driveFetch(dlUrl);
           const buf = await resp.arrayBuffer();
           const wb = window.XLSX.read(buf, { type: 'array' });
 
@@ -3000,7 +3029,7 @@ function DriveScanTab() {
       // "stale" (desatualizado), até que ele volte a aparecer numa varredura futura.
       setResults((prevResults) => {
         const byId = new Map();
-        (prevResults || []).forEach((r) => { if (r && r.fileId) byId.set(r.fileId, { ...r, stale: true }); });
+        (prevResults || []).forEach((r) => { if (r && r.fileId && !keptKeys.has(mapKeyOf(r.fileName))) byId.set(r.fileId, { ...r, stale: true }); });
         scanResults.forEach((r) => { byId.set(r.fileId, { ...r, stale: false }); });
         return Array.from(byId.values()).sort((a, b) => (b.pendingCount || 0) - (a.pendingCount || 0));
       });
