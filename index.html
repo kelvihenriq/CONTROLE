@@ -2571,7 +2571,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       break;
     }
   }
-  if (headerIdx === -1 || colLocation === -1) return { pending: [], total: 0, usedDateFallback: false };
+  if (headerIdx === -1 || colLocation === -1) return { pending: [], total: 0, usedDateFallback: false, lastDate: 0 };
 
   const dataRows = [];
   let lastInvoiceRelIdx = -1;
@@ -2616,6 +2616,10 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
     });
   }
 
+  // Data mais recente entre as linhas dessa aba — usada pra escolher a aba "viva" quando o arquivo tem várias.
+  let lastDate = 0;
+  dataRows.forEach((r) => { const d = parseUSShortDate(r.date); if (d && d.getTime() > lastDate && d.getFullYear() < 2100) lastDate = d.getTime(); });
+
   let pending;
   let usedDateFallback = false;
 
@@ -2644,7 +2648,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
     pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.location);
   }
 
-  return { pending, total: dataRows.length, usedDateFallback };
+  return { pending, total: dataRows.length, usedDateFallback, lastDate };
 }
 
 // Normaliza um nome de mapa/código pra comparação: maiúsculo, só letras e números.
@@ -2981,11 +2985,21 @@ function DriveScanTab() {
           // Só a aba principal de produção conta — evita somar rascunhos, cópias
           // e abas de invoices antigos que também moram dentro do mesmo arquivo.
           const isDraftSheetName = (name) => /rascunho|c[oó]pia|draft|invoice\s*\d|hist[oó]rico|antig/i.test(name);
-          const mainSheetName = wb.SheetNames.find((n) => !isDraftSheetName(n)) || wb.SheetNames[0];
+          // Antes pegava sempre a 1ª aba que não parecesse rascunho — mas se o arquivo tem mais de uma
+          // aba de produção (ex: a equipe lança na aba nova e a 1ª ficou parada), o scanner lia a
+          // aba errada e mostrava "EM DIA". Agora lê todas as abas "normais" e fica com a que tem a
+          // data de produção mais recente (empate: a primeira da ordem).
+          const candidateNames = wb.SheetNames.filter((n) => !isDraftSheetName(n));
+          const namesToTry = candidateNames.length ? candidateNames : wb.SheetNames.slice(0, 1);
+          let mainSheetName = null;
+          let parsed = null;
+          namesToTry.forEach((name) => {
+            const rowsTry = window.XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+            const p = parseProductionSheetRows(rowsTry, config.cycleStartDate || null, config.cycleEndDate || null);
+            if (!parsed || (p.total > 0 && (parsed.total === 0 || p.lastDate > parsed.lastDate))) { parsed = p; mainSheetName = name; }
+          });
 
-          if (mainSheetName) {
-            const rows = window.XLSX.utils.sheet_to_json(wb.Sheets[mainSheetName], { header: 1, raw: false, defval: '' });
-            const parsed = parseProductionSheetRows(rows, config.cycleStartDate || null, config.cycleEndDate || null);
+          if (mainSheetName && parsed) {
             if (parsed.pending.length > 0) {
               mapPending = parsed.pending.map((p) => ({ ...p, sheet: mainSheetName }));
             }
@@ -3012,6 +3026,8 @@ function DriveScanTab() {
             pendingRows: mapPending,
             totalRows: mapTotal,
             usedDateFallback: mapUsedDateFallback,
+            sheetName: mainSheetName || '',
+            sheetCount: wb.SheetNames.length,
             error: null,
           });
         } catch (e) {
@@ -3289,6 +3305,9 @@ function DriveScanTab() {
                       <td style={tdStyleDrive}><strong>{r.mapName}</strong></td>
                       <td style={{ ...tdStyleDrive, color: C.textFaint }}>
                         <a href={r.webViewLink} target="_blank" rel="noreferrer" style={{ color: C.textDim }}>{r.fileName}</a>
+                        {r.sheetName && r.sheetCount > 1 && (
+                          <div style={{ fontSize: 9, color: C.textFaint, marginTop: 2 }}>{t('aba lida')}: {r.sheetName}</div>
+                        )}
                       </td>
                       <td style={tdStyleDrive}>
                         {r.modifiedTime ? new Date(r.modifiedTime).toLocaleString('pt-BR') : "—"}
