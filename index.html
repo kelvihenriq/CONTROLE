@@ -1021,6 +1021,17 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
 
 
 
+// Versão em FÓRMULA do computeAsbuiltFormat — usada no .xlsx exportado, pra coluna "ASBUILT (GERADO)"
+// se montar sozinha (ex: FS01X22 FS16X1) assim que alguém digitar as quantidades dos códigos na linha.
+// Usa o ID do código escrito direto na fórmula (igual ao app) e funciona no Excel e no Google Sheets.
+function buildAsbuiltFormula(row, fields, firstCodeCol, colLetterFn) {
+  const parts = fields.map((fld, i) => {
+    const ref = `${colLetterFn(firstCodeCol + i)}${row}`;
+    return `IF(N(${ref})>0,"${String(fld.id).replace(/"/g, '""')}X"&${ref}&" ","")`;
+  });
+  return parts.length ? `TRIM(${parts.join('&')})` : '""';
+}
+
 function computeAsbuiltFormat(codes = {}, fields = CODE_FIELDS) {
   const parts = [];
   fields.forEach(field => {
@@ -4676,11 +4687,18 @@ function ProductionDashboard() {
         item.daily || '', item.pendings || '', item.date || '', item.map || '', item.location || '',
         item.splice || '', item.name || '', item.type || '', item.typeEnd || '',
         ...allCodeFields.map((f) => toNumOrBlank(item.codes?.[f.id])),
-        asbuiltText
+        { formula: buildAsbuiltFormula(3 + idx, allCodeFields, nMain + 1, colLetter), result: asbuiltText }
       ];
     });
 
     const lastDataRow = 2 + filteredProduction.length;
+    // Linhas extras já formatadas logo abaixo dos dados: é só digitar a linha nova e os códigos —
+    // o ASBUILT (GERADO) preenche sozinho e os TOTAIS do topo já contam a linha.
+    const SPARE_ROWS = 50;
+    const styleEndRow = lastDataRow + SPARE_ROWS;
+    for (let r = lastDataRow + 1; r <= styleEndRow; r++) {
+      ws.getRow(r).getCell(totalCols).value = { formula: buildAsbuiltFormula(r, allCodeFields, nMain + 1, colLetter), result: '' };
+    }
 
     // Preenche a linha de TOTAIS com fórmulas de SOMA de verdade (não números fixos) — assim,
     // se alguém editar um valor de código depois de exportado, o total no topo recalcula
@@ -4689,7 +4707,8 @@ function ProductionDashboard() {
       const col = nMain + 1 + i;
       const colL = colLetter(col);
       const cell = ws.getRow(1).getCell(col);
-      cell.value = { formula: `SUM(${colL}3:${colL}${lastDataRow})`, result: codeTotals[f.id] || 0 };
+      // Soma até a linha 1000 (no mínimo) — cobre linhas novas digitadas depois da exportação.
+      cell.value = { formula: `SUM(${colL}3:${colL}${Math.max(1000, styleEndRow)})`, result: codeTotals[f.id] || 0 };
     });
 
     // ----- CORES -----
@@ -4719,8 +4738,8 @@ function ProductionDashboard() {
       cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
     }
 
-    // Linhas de dados
-    for (let r = 3; r <= lastDataRow; r++) {
+    // Linhas de dados (+ linhas extras prontas pra digitar)
+    for (let r = 3; r <= styleEndRow; r++) {
       for (let c = 1; c <= totalCols; c++) {
         const cell = ws.getRow(r).getCell(c);
         cell.border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
