@@ -2781,6 +2781,266 @@ const tdStyleDrive = { padding: "8px 10px", color: C.text, verticalAlign: "top" 
 const thStyleDriveSm = { textAlign: "left", padding: "5px 8px", color: C.textFaint, fontSize: 9 };
 const tdStyleDriveSm = { padding: "5px 8px", color: C.textDim };
 
+// ===== ABA WHATSAPP — mostra, por SEMANA (sáb–sex) ou por dia, o que cada grupo reportou com foto e confere com a produção lançada =====
+// Os dados vêm do programa "whatsapp-scanner" (pasta à parte), que grava no Supabase (app_state):
+//   whatsapp_status (conexão/QR) · whatsapp_groups (lista de grupos) · whatsapp_config (grupos acompanhados) · whatsapp_activity (fotos + legendas por dia)
+
+// Lê a legenda da foto: "143 / Splice 2 / Ring" → { loc: "143", splice: 2, type: "RING CUT" } (Tail/End = END)
+function waParseCaption(text) {
+  const raw = String(text || '');
+  const sp = raw.match(/splices?\s*(\d+)/i);
+  const loc = raw.replace(/splices?\s*\d+/ig, ' ').match(/\d+/);
+  const type = /\b(tail|end)\b/i.test(raw) ? 'END' : (/\bring\b/i.test(raw) ? 'RING CUT' : '');
+  return { loc: loc ? String(Number(loc[0])) : '', splice: sp ? Number(sp[1]) : null, type };
+}
+
+// Procura, nas linhas de produção do mapa, o ponto reportado na legenda (número do ponto no LOCATION).
+//   OK = ponto + splice + tipo batem · CHECK = achou o ponto mas splice/tipo diferem · MISSING = ponto não lançado · NONUM = legenda sem número
+function waMatchReport(rep, lines) {
+  if (!rep.loc) return { status: 'NONUM' };
+  const cands = lines.filter((l) => l.nums.includes(rep.loc));
+  if (!cands.length) return { status: 'MISSING' };
+  const exact = cands.find((l) => (rep.splice == null || Number(l.splice) === rep.splice) && (!rep.type || String(l.typeEnd || '').toUpperCase() === rep.type));
+  return exact ? { status: 'OK', line: exact } : { status: 'CHECK', line: cands[0] };
+}
+
+const waIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Semana de faturamento: sábado → sexta
+function waWeekRange(isoDay) {
+  const d = new Date(`${isoDay}T12:00:00`);
+  const start = new Date(d); start.setDate(d.getDate() - ((d.getDay() + 1) % 7));
+  const end = new Date(start); end.setDate(start.getDate() + 6);
+  return { start: waIso(start), end: waIso(end) };
+}
+function waEachDay(startIso, endIso) {
+  const out = [];
+  for (let d = new Date(`${startIso}T12:00:00`); waIso(d) <= endIso; d.setDate(d.getDate() + 1)) out.push(waIso(d));
+  return out;
+}
+
+function useRemoteKey(key) {
+  const [value, setValue] = React.useState(null);
+  React.useEffect(() => {
+    let active = true;
+    sb.from(APP_STATE_TABLE).select('value').eq('key', key).maybeSingle().then(({ data }) => { if (active && data) setValue(data.value); });
+    const ch = sb.channel('wa_' + key).on('postgres_changes', { event: '*', schema: 'public', table: APP_STATE_TABLE, filter: `key=eq.${key}` }, (p) => {
+      if (p.new && p.new.value !== undefined) setValue(p.new.value);
+    }).subscribe();
+    return () => { active = false; sb.removeChannel(ch); };
+  }, [key]);
+  return [value, setValue];
+}
+
+function WhatsAppTab({ productionList }) {
+  const [status] = useRemoteKey('whatsapp_status');
+  const [groupsData] = useRemoteKey('whatsapp_groups');
+  const [activity] = useRemoteKey('whatsapp_activity');
+  const [config, setConfig] = useRemoteKey('whatsapp_config');
+  const [mode, setMode] = useState('WEEK'); // WEEK = sáb–sex | DAY
+  const [anchor, setAnchor] = useState(() => waIso(new Date()));
+  const [search, setSearch] = useState('');
+  const [showMode, setShowMode] = useState('AUTO'); // AUTO = acompanhados (ou todos, se nenhum marcado)
+  const [openId, setOpenId] = useState(null);
+
+  const range = mode === 'WEEK' ? waWeekRange(anchor) : { start: anchor, end: anchor };
+  const days = useMemo(() => waEachDay(range.start, range.end), [range.start, range.end]);
+  const shift = (n) => { const d = new Date(`${anchor}T12:00:00`); d.setDate(d.getDate() + n * (mode === 'WEEK' ? 7 : 1)); setAnchor(waIso(d)); };
+  const fmt = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+
+  const monitored = useMemo(() => new Set(config?.monitored || []), [config]);
+  const saveMonitored = (ids) => {
+    const value = { monitored: Array.from(ids) };
+    setConfig(value);
+    sb.from(APP_STATE_TABLE).upsert({ key: 'whatsapp_config', value, updated_at: new Date().toISOString() });
+  };
+  const toggle = (id) => { const next = new Set(monitored); next.has(id) ? next.delete(id) : next.add(id); saveMonitored(next); };
+
+  // Mapas da produção (chave sem espaços/traços) com suas linhas
+  const toIso = (s) => {
+    s = String(s || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (!m) return '';
+    return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  };
+  const compact = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]+/g, '');
+  const hasMapKey = (hay, key) => {
+    let i = hay.indexOf(key);
+    while (i !== -1) {
+      const after = hay[i + key.length]; // só importa o que vem DEPOIS: FG44 não pode casar com FG440
+      if (!(after && /[0-9]/.test(after))) return true;
+      i = hay.indexOf(key, i + 1);
+    }
+    return false;
+  };
+  const mapInfo = useMemo(() => {
+    const byMap = new Map();
+    (productionList || []).forEach((p) => {
+      const name = String(p.map || '').trim();
+      const key = compact(name);
+      if (key.length < 4) return; // evita casar com nomes curtos demais
+      const cur = byMap.get(key) || { name, key, lines: [] };
+      cur.lines.push({ date: toIso(p.date), location: p.location || '', splice: p.splice, typeEnd: p.typeEnd, nums: (String(p.location || '').match(/\d+/g) || []).map((n) => String(Number(n))) });
+      byMap.set(key, cur);
+    });
+    return Array.from(byMap.values());
+  }, [productionList]);
+
+  const rows = useMemo(() => {
+    const names = {};
+    (groupsData?.groups || []).forEach((g) => { names[g.id] = g.name; });
+    Object.entries(activity?.groups || {}).forEach(([id, g]) => { if (!names[id]) names[id] = g.name; });
+    return Object.entries(names).map(([id, name]) => {
+      const gk = compact(name);
+      const matched = mapInfo.filter((m) => hasMapKey(gk, m.key));
+      const lines = matched.flatMap((m) => m.lines).filter((l) => l.date >= range.start && l.date <= range.end);
+      let photos = 0, last = 0;
+      const senders = {}, captions = [];
+      days.forEach((d) => {
+        const dd = activity?.groups?.[id]?.days?.[d];
+        if (!dd) return;
+        photos += dd.photos || 0;
+        last = Math.max(last, dd.last || 0);
+        Object.entries(dd.senders || {}).forEach(([n, c]) => { senders[n] = (senders[n] || 0) + c; });
+        (dd.captions || []).forEach((c) => captions.push(c));
+      });
+      captions.sort((a, b) => a.ms - b.ms);
+      const reports = captions.map((c) => { const rep = waParseCaption(c.text); return { ...c, rep, ...waMatchReport(rep, lines) }; });
+      const count = (s) => reports.filter((r) => r.status === s).length;
+      const miss = count('MISSING'), check = count('CHECK');
+      let state = 'NONE';
+      if (photos > 0) {
+        if (!matched.length) state = 'NOMAP';
+        else if (reports.length) state = miss ? 'MISSING' : (check ? 'CHECK' : 'OK');
+        else state = lines.length ? 'OK' : 'MISSING'; // fotos sem legenda: só dá pra saber se há alguma produção lançada no período
+      }
+      const who = Object.entries(senders).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n, c]) => `${n} (${c})`).join(', ');
+      return { id, name, photos, state, matched, launched: lines.length, who, last, reports, miss, check };
+    });
+  }, [groupsData, activity, mapInfo, days, range.start, range.end]);
+
+  const order = { MISSING: 0, CHECK: 1, NOMAP: 2, OK: 3, NONE: 4 };
+  const visible = rows
+    .filter((r) => (showMode === 'ALL' || monitored.size === 0) ? true : monitored.has(r.id))
+    .filter((r) => !search.trim() || compact(r.name).includes(compact(search)))
+    .sort((a, b) => (order[a.state] - order[b.state]) || b.photos - a.photos || a.name.localeCompare(b.name));
+  const tracked = rows.filter((r) => monitored.has(r.id));
+  const totalReports = tracked.reduce((s, r) => s + r.reports.length, 0);
+  const totalMiss = tracked.reduce((s, r) => s + r.miss, 0);
+
+  const pill = (text, color, bg) => <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, whiteSpace: 'nowrap', color, background: bg }}>{text}</span>;
+  const badge = (r) => {
+    if (r.state === 'MISSING') return pill(r.reports.length ? `${r.miss} PONTO(S) SEM PRODUÇÃO` : 'FOTO, SEM PRODUÇÃO LANÇADA', C.red, C.redSoft);
+    if (r.state === 'CHECK') return pill(`CONFERIR ${r.check} PONTO(S)`, C.amber, C.amberSoft);
+    if (r.state === 'NOMAP') return pill('FOTO — MAPA NÃO IDENTIFICADO', C.amber, C.amberSoft);
+    if (r.state === 'OK') return pill(r.reports.length ? 'TUDO LANÇADO' : 'FOTO + PRODUÇÃO LANÇADA', C.green, C.greenSoft);
+    return <span style={{ fontSize: 10, color: C.textDim }}>sem foto</span>;
+  };
+  const repBadge = (r) => ({
+    OK: pill('LANÇADO', C.green, C.greenSoft),
+    CHECK: pill('CONFERIR SPLICE/TIPO', C.amber, C.amberSoft),
+    MISSING: pill('NÃO LANÇADO', C.red, C.redSoft),
+    NONUM: pill('LEGENDA SEM NÚMERO', C.textDim, 'transparent'),
+  }[r.status]);
+
+  const card = { background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 16, marginBottom: 14 };
+  const btn = (active) => ({ background: active ? C.accentSoft : 'transparent', color: active ? C.accent : C.text, border: `1px solid ${active ? C.accent : C.border2}`, borderRadius: 4, padding: '7px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer' });
+  const st = status?.state;
+
+  return (
+    <div style={{ padding: '14px 4px' }}>
+      <div style={card}>
+        <div style={{ fontSize: 11, color: C.textDim, letterSpacing: 1, marginBottom: 10 }}>CONEXÃO COM O WHATSAPP (SOMENTE LEITURA)</div>
+        {!status && <div style={{ color: C.amber, fontSize: 12 }}>Servidor não encontrado — o programa <b>whatsapp-scanner</b> ainda não foi ligado (veja o README da pasta).</div>}
+        {st === 'open' && <div style={{ color: C.green, fontSize: 12, fontWeight: 700 }}>✓ Conectado{status.name ? ` como ${status.name}` : ''}</div>}
+        {(st === 'starting' || st === 'closed') && <div style={{ color: C.amber, fontSize: 12 }}>Conectando... (se demorar, o servidor pode estar reiniciando)</div>}
+        {st === 'logged_out' && <div style={{ color: C.red, fontSize: 12 }}>Sessão encerrada pelo celular. Um novo QR code aparece em instantes.</div>}
+        {st === 'qr' && status.qr && (
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+            <img src={status.qr} alt="QR code do WhatsApp" style={{ width: 200, height: 200, background: '#fff', borderRadius: 6 }} />
+            <div style={{ fontSize: 12, color: C.text, lineHeight: 1.6 }}>No celular: WhatsApp → <b>Aparelhos conectados</b> → <b>Conectar um aparelho</b> → leia este QR code.<br />Depois, marque abaixo quais grupos acompanhar.</div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14, alignItems: 'stretch' }}>
+        {[['GRUPOS ACOMPANHADOS', tracked.length, C.accent], ['PONTOS REPORTADOS (LEGENDAS)', totalReports, C.green], ['REPORTADOS SEM PRODUÇÃO', totalMiss, totalMiss ? C.red : C.textDim]].map(([label, n, color]) => (
+          <div key={label} style={{ ...card, marginBottom: 0, minWidth: 170, padding: '10px 14px' }}>
+            <div style={{ fontSize: 9, color: C.textDim, letterSpacing: 1 }}>{label}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, color }}>{n}</div>
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>
+          <button onClick={() => setMode('WEEK')} style={btn(mode === 'WEEK')}>Semana (sáb–sex)</button>
+          <button onClick={() => setMode('DAY')} style={btn(mode === 'DAY')}>Dia</button>
+          <button onClick={() => shift(-1)} style={btn(false)}>◀</button>
+          <span style={{ fontSize: 12, fontWeight: 700, color: C.text, minWidth: 120, textAlign: 'center' }}>{mode === 'WEEK' ? `${fmt(range.start)} → ${fmt(range.end)}` : fmt(range.start)}</span>
+          <button onClick={() => shift(1)} style={btn(false)}>▶</button>
+          <button onClick={() => setAnchor(waIso(new Date()))} style={btn(false)}>Hoje</button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <Input placeholder="Buscar grupo..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 220 }} />
+        <button onClick={() => setShowMode(showMode === 'ALL' ? 'AUTO' : 'ALL')} style={btn(false)}>
+          {showMode === 'ALL' || monitored.size === 0 ? 'Mostrando: todos os grupos' : 'Mostrando: só acompanhados'}
+        </button>
+        <button onClick={() => saveMonitored(new Set(visible.map((r) => r.id)))} style={btn(false)}>Acompanhar os listados</button>
+        <button onClick={() => saveMonitored(new Set())} style={{ ...btn(false), color: C.textDim }}>Limpar seleção</button>
+      </div>
+
+      {monitored.size === 0 && rows.length > 0 && <div style={{ color: C.amber, fontSize: 12, marginBottom: 10 }}>Nenhum grupo marcado ainda — marque abaixo os grupos que devem ser acompanhados. Só a partir daí as fotos começam a ser contadas.</div>}
+
+      <div style={{ ...card, padding: 0, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr style={{ color: C.textDim, textAlign: 'left', fontSize: 10, letterSpacing: 1 }}>
+              {['ACOMP.', 'GRUPO', 'MAPA NA PRODUÇÃO', 'FOTOS', 'PONTOS', 'QUEM MANDOU', 'LINHAS LANÇADAS', 'SITUAÇÃO'].map((h) => <th key={h} style={{ padding: '10px', borderBottom: `1px solid ${C.border2}` }}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((r) => (
+              <React.Fragment key={r.id}>
+                <tr style={{ borderTop: `1px solid ${C.border2}`, background: r.state === 'MISSING' ? C.redSoft : 'transparent' }}>
+                  <td style={tdStyleDrive}><input type="checkbox" checked={monitored.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                  <td style={{ ...tdStyleDrive, cursor: r.reports.length ? 'pointer' : 'default' }} onClick={() => r.reports.length && setOpenId(openId === r.id ? null : r.id)}>
+                    <strong>{r.name}</strong>{r.reports.length ? <span style={{ color: C.accent, fontSize: 10 }}> {openId === r.id ? '▲' : '▼ ver pontos'}</span> : null}
+                  </td>
+                  <td style={{ ...tdStyleDrive, color: C.textDim }}>{r.matched.length ? r.matched.slice(0, 2).map((m) => m.name).join(', ') : '—'}</td>
+                  <td style={{ ...tdStyleDrive, color: r.photos ? C.green : C.textDim, fontWeight: 700 }}>{r.photos}</td>
+                  <td style={tdStyleDrive}>{r.reports.length || '—'}</td>
+                  <td style={{ ...tdStyleDrive, color: C.textDim }}>{r.who || '—'}</td>
+                  <td style={tdStyleDrive}>{r.matched.length ? r.launched : '—'}</td>
+                  <td style={tdStyleDrive}>{monitored.has(r.id) ? badge(r) : <span style={{ fontSize: 10, color: C.textFaint }}>não acompanhado</span>}</td>
+                </tr>
+                {openId === r.id && (
+                  <tr><td colSpan={8} style={{ padding: '6px 14px 14px 40px', background: C.panel2 }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                      <thead><tr style={{ color: C.textDim, textAlign: 'left', fontSize: 10 }}>{['QUANDO', 'QUEM', 'LEGENDA DA FOTO', 'SITUAÇÃO', 'LINHA NA PRODUÇÃO'].map((h) => <th key={h} style={{ padding: '6px 8px' }}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {r.reports.map((p) => (
+                          <tr key={p.id || p.ms} style={{ borderTop: `1px solid ${C.border2}` }}>
+                            <td style={tdStyleDriveSm}>{new Date(p.ms).toLocaleString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+                            <td style={tdStyleDriveSm}>{p.sender}</td>
+                            <td style={{ ...tdStyleDriveSm, color: C.text }}>{String(p.text).replace(/\s*\n\s*/g, ' / ')}</td>
+                            <td style={tdStyleDriveSm}>{repBadge(p)}</td>
+                            <td style={tdStyleDriveSm}>{p.line ? `${p.line.location} · splice ${p.line.splice} · ${p.line.typeEnd || ''} · ${fmt(p.line.date)}` : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+            {visible.length === 0 && <tr><td colSpan={8} style={{ padding: 20, color: C.textDim, textAlign: 'center' }}>{rows.length ? 'Nenhum grupo encontrado.' : 'A lista de grupos aparece aqui assim que o WhatsApp estiver conectado.'}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function DriveScanTab() {
   const { t, lang } = useLang();
   const [config, setConfig] = useState(() => {
@@ -5199,6 +5459,18 @@ function ProductionDashboard() {
             >
               <CloudIcon size={13} /> {t('SCANNER DRIVE')}
             </button>
+            <button
+              onClick={() => setActiveTab("WHATSAPP")}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: activeTab === "WHATSAPP" ? C.greenSoft : "transparent",
+                color: activeTab === "WHATSAPP" ? C.green : C.textDim,
+                border: activeTab === "WHATSAPP" ? `1px solid ${C.green}` : "1px solid transparent",
+                borderRadius: 4, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer"
+              }}
+            >
+              <Users size={13} /> WHATSAPP
+            </button>
           </div>
         </div>
 
@@ -5372,6 +5644,7 @@ function ProductionDashboard() {
       {activeTab === "PENDINGS" && <PendingsTab pendingsByMap={pendingsByMap} setPendingsByMap={setPendingsByMap} suggestedMaps={availableMaps} />}
       {activeTab === "REDLINES" && <RedlinesTab redlinesData={redlinesData} setRedlinesData={setRedlinesData} />}
       {activeTab === "DRIVE_SCAN" && <DriveScanTab />}
+      {activeTab === "WHATSAPP" && <WhatsAppTab productionList={productionList} />}
 
       {activeTab === "PRODUCTION_LIST" && (
         <div style={{ padding: "20px" }}>
