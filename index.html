@@ -1204,6 +1204,87 @@ function CollaboratorCard({ c }) {
   );
 }
 
+// Seletor de mapa com BUSCA: clica, digita parte do nome (ex: "113" ou "bowlin 07") e a lista filtra.
+// Enter escolhe o primeiro resultado, Esc fecha. Substitui o <select> comum quando há muitos mapas.
+function SearchableMapSelect({ value, onChange, options, allLabel }) {
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+  const wrapRef = React.useRef(null);
+  const inputRef = React.useRef(null);
+
+  const norm = (v) => String(v || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/g, ' ').trim();
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  React.useEffect(() => { if (open && inputRef.current) inputRef.current.focus(); }, [open]);
+
+  // Cada palavra digitada precisa aparecer no nome (ordem livre): "bowlin 113" acha "C3 - BOWLIN - FG 113".
+  const q = norm(query);
+  const words = q ? q.split(' ') : [];
+  const filtered = words.length
+    ? options.filter((o) => { const n = norm(o.map); return words.every((w) => n.includes(w)); })
+    : options;
+  const showAll = !q || norm(allLabel).includes(q);
+
+  const pick = (v) => { onChange(v); setOpen(false); setQuery(''); };
+  const currentLabel = value === 'ALL' ? allLabel : value;
+  const currentCount = value === 'ALL' ? null : (options.find((o) => o.map === value)?.count);
+
+  const rowStyle = (active) => ({
+    display: 'flex', justifyContent: 'space-between', gap: 10, padding: '7px 10px', fontSize: 11, cursor: 'pointer',
+    fontWeight: active ? 700 : 500, color: active ? C.accent : C.text, background: active ? 'rgba(0,229,255,0.08)' : 'transparent',
+  });
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button type="button" onClick={() => setOpen((o) => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', color: C.text, border: 'none', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', padding: 0, maxWidth: 230 }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentLabel}{currentCount != null ? ` (${currentCount})` : ''}</span>
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 8px)', left: -40, zIndex: 1000, width: 340, background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 6, boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${C.border2}` }}>
+            <Search size={13} color={C.textDim} />
+            <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar mapa... (ex: 113)"
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+                if (e.key === 'Enter') { e.preventDefault(); if (filtered.length) pick(filtered[0].map); else if (showAll) pick('ALL'); }
+              }}
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: C.text, fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }} />
+            {query && (
+              <button type="button" onClick={() => { setQuery(''); if (inputRef.current) inputRef.current.focus(); }}
+                style={{ background: 'transparent', border: 'none', color: C.textDim, cursor: 'pointer', padding: 0, display: 'flex' }}><X size={12} /></button>
+            )}
+          </div>
+          <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+            {showAll && (
+              <div onClick={() => pick('ALL')} style={rowStyle(value === 'ALL')}>
+                <span>{allLabel}</span>
+              </div>
+            )}
+            {filtered.map((o) => (
+              <div key={o.map} onClick={() => pick(o.map)} style={rowStyle(value === o.map)}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.map}</span>
+                <span style={{ color: C.textDim, flexShrink: 0 }}>{o.count}</span>
+              </div>
+            ))}
+            {!showAll && filtered.length === 0 && (
+              <div style={{ padding: '12px 10px', fontSize: 11, color: C.textDim }}>Nenhum mapa encontrado</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Input(props) {
   return (
     <input {...props} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px 10px", fontSize: 11, outline: "none", fontFamily: "'JetBrains Mono', monospace", width: "100%", boxSizing: "border-box", ...(props.style || {}) }} />
@@ -5215,12 +5296,12 @@ function ProductionDashboard() {
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
                 <List size={13} color={C.green} />
                 <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Mapa:')}</span>
-                <select value={selectedMapProd} onChange={(e) => setSelectedMapProd(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer", maxWidth: 200 }}>
-                  <option value="ALL" style={{ background: C.panel }}>{t('Todos os Mapas')} ({productionByDay.length})</option>
-                  {availableMapsForSelectedDay.map(({ map, count }) => (
-                    <option key={map} value={map} style={{ background: C.panel }}>{map} ({count})</option>
-                  ))}
-                </select>
+                <SearchableMapSelect
+                  value={selectedMapProd}
+                  onChange={setSelectedMapProd}
+                  options={availableMapsForSelectedDay}
+                  allLabel={`${t('Todos os Mapas')} (${productionByDay.length})`}
+                />
               </div>
 
               {selectedMapProd !== "ALL" && (
