@@ -2945,14 +2945,21 @@ function WhatsAppTab({ productionList }) {
 
   const card = { background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 16, marginBottom: 14 };
   const btn = (active) => ({ background: active ? C.accentSoft : 'transparent', color: active ? C.accent : C.text, border: `1px solid ${active ? C.accent : C.border2}`, borderRadius: 4, padding: '7px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer' });
-  const st = status?.state;
+  // O programa renova um "heartbeat" a cada 30s enquanto está aberto. Sem renovar por 2 min (ou se avisou que parou), está fechado.
+  const [now, setNow] = useState(Date.now());
+  React.useEffect(() => { const i = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(i); }, []);
+  const off = !!status && (status.state === 'stopped' || (status.heartbeat && now - status.heartbeat > 120000));
+  const st = off ? 'off' : status?.state;
+  const clock = (iso) => iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 
   return (
     <div style={{ padding: '14px 4px' }}>
       <div style={card}>
         <div style={{ fontSize: 11, color: C.textDim, letterSpacing: 1, marginBottom: 10 }}>CONEXÃO COM O WHATSAPP (SOMENTE LEITURA)</div>
-        {!status && <div style={{ color: C.amber, fontSize: 12 }}>Servidor não encontrado — o programa <b>whatsapp-scanner</b> ainda não foi ligado (veja o README da pasta).</div>}
-        {st === 'open' && <div style={{ color: C.green, fontSize: 12, fontWeight: 700 }}>✓ Conectado{status.name ? ` como ${status.name}` : ''}</div>}
+        {!status && <div style={{ color: C.amber, fontSize: 12 }}>Programa não encontrado — abra o <b>iniciar-scanner.bat</b> no computador (veja o README da pasta <b>whatsapp-scanner</b>).</div>}
+        {st === 'off' && <div style={{ color: C.amber, fontSize: 12, lineHeight: 1.6 }}>Programa fechado — mostrando o que foi contado até {clock(status.syncedAt || (status.heartbeat && new Date(status.heartbeat).toISOString()) || status.updatedAt)}.<br />Para atualizar, abra o <b>iniciar-scanner.bat</b> no computador e espere aparecer "SINCRONIZADO".</div>}
+        {st === 'open' && status.synced && <div style={{ color: C.green, fontSize: 12, fontWeight: 700 }}>✓ Conectado e sincronizado{status.syncedAt ? ` às ${clock(status.syncedAt)}` : ''} — pode fechar o programa quando quiser.</div>}
+        {st === 'open' && !status.synced && <div style={{ color: C.amber, fontSize: 12 }}>Conectado — buscando as mensagens que chegaram enquanto o programa estava fechado... aguarde cerca de 1 minuto.</div>}
         {(st === 'starting' || st === 'closed') && <div style={{ color: C.amber, fontSize: 12 }}>Conectando... (se demorar, o servidor pode estar reiniciando)</div>}
         {st === 'logged_out' && <div style={{ color: C.red, fontSize: 12 }}>Sessão encerrada pelo celular. Um novo QR code aparece em instantes.</div>}
         {st === 'qr' && status.qr && (
