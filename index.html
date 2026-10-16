@@ -2841,6 +2841,14 @@ function WhatsAppTab({ productionList }) {
   const [search, setSearch] = useState('');
   const [showMode, setShowMode] = useState('AUTO'); // AUTO = acompanhados (ou todos, se nenhum marcado)
   const [openId, setOpenId] = useState(null);
+  const [scanAt, setScanAt] = useState(0);
+
+  // Comandos para o programa (ele lê a cada ~5s): 'scan' = atualizar agora · 'relink' = reconectar do zero (QR novo + histórico)
+  const sendCommand = (action) => sb.from(APP_STATE_TABLE).upsert({ key: 'whatsapp_command', value: { id: Date.now(), action }, updated_at: new Date().toISOString() });
+  const scanNow = () => { setScanAt(Date.now()); sendCommand('scan'); };
+  const relink = () => {
+    if (window.confirm('Reconectar do zero?\n\nO programa vai desconectar este aparelho do seu WhatsApp e mostrar um QR code novo aqui. Depois de ler o QR, o WhatsApp reenvia o histórico recente dos grupos.\n\nUse só quando precisar buscar mensagens antigas.')) sendCommand('relink');
+  };
 
   const range = mode === 'WEEK' ? waWeekRange(anchor) : { start: anchor, end: anchor };
   const days = useMemo(() => waEachDay(range.start, range.end), [range.start, range.end]);
@@ -2968,6 +2976,20 @@ function WhatsAppTab({ productionList }) {
             <div style={{ fontSize: 12, color: C.text, lineHeight: 1.6 }}>No celular: WhatsApp → <b>Aparelhos conectados</b> → <b>Conectar um aparelho</b> → leia este QR code.<br />Depois, marque abaixo quais grupos acompanhar.</div>
           </div>
         )}
+        {st === 'open' && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+            {(() => {
+              const scanning = scanAt > 0 && !(status.lastScanAt && new Date(status.lastScanAt).getTime() >= scanAt) && Date.now() - scanAt < 30000;
+              return (
+                <button onClick={scanNow} disabled={scanning} style={{ background: C.green, color: '#000', border: 'none', borderRadius: 4, padding: '8px 18px', fontSize: 12, fontWeight: 700, cursor: scanning ? 'default' : 'pointer', opacity: scanning ? 0.6 : 1 }}>
+                  {scanning ? 'Escaneando...' : 'Escanear Agora'}
+                </button>
+              );
+            })()}
+            <button onClick={relink} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 4, padding: '7px 12px', fontSize: 11, cursor: 'pointer' }}>Reconectar do zero (buscar histórico)</button>
+            {status.lastScanAt && <span style={{ fontSize: 11, color: C.textDim }}>Último escaneamento: {clock(status.lastScanAt)}</span>}
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14, alignItems: 'stretch' }}>
@@ -2996,6 +3018,7 @@ function WhatsAppTab({ productionList }) {
         <button onClick={() => saveMonitored(new Set())} style={{ ...btn(false), color: C.textDim }}>Limpar seleção</button>
       </div>
 
+      {monitored.size > 0 && st === 'open' && tracked.length > 0 && tracked.every((r) => r.photos === 0) && <div style={{ color: C.amber, fontSize: 12, marginBottom: 10 }}>Nenhuma foto contada nesse período ainda. Clique em <b>Escanear Agora</b> para atualizar. Se continuar vazio, o WhatsApp pode não ter enviado histórico desses grupos — use "Reconectar do zero" para pedir de novo, ou navegue para outra semana.</div>}
       {monitored.size === 0 && rows.length > 0 && <div style={{ color: C.amber, fontSize: 12, marginBottom: 10 }}>Nenhum grupo marcado ainda — marque abaixo os grupos que devem ser acompanhados. Só a partir daí as fotos começam a ser contadas.</div>}
 
       <div style={{ ...card, padding: 0, overflowX: 'auto' }}>
