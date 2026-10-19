@@ -2785,24 +2785,43 @@ const tdStyleDriveSm = { padding: "5px 8px", color: C.textDim };
 // Os dados vêm do programa "whatsapp-scanner" (pasta à parte), que grava no Supabase (app_state):
 //   whatsapp_status (conexão/QR) · whatsapp_groups (lista de grupos) · whatsapp_config (grupos acompanhados) · whatsapp_activity (fotos + legendas por dia)
 
-// Lê a legenda da foto: "143 / Splice 2 / Ring" → { loc: "143", splice: 2, type: "RING CUT" } (Tail/End = END)
+// Lê a legenda da foto. Exemplos reais:
+//   "FG69 FT045 / 3 light levels"  → ponto 45 · "FG69E_FT_068 / 2 Splices ... / End" → ponto 68, splice 2, END
+//   "SE 008 REENTRY 7 splices" → ponto 8, splice 7 · "143 / Splice 2 / Ring" → ponto 143, splice 2, RING CUT
+// O ponto é o número depois de FT / SE / S; se não houver, o primeiro número que não seja do mapa (FGxx) nem de splices.
 function waParseCaption(text) {
-  const raw = String(text || '');
-  const sp = raw.match(/splices?\s*(\d+)/i);
-  const loc = raw.replace(/splices?\s*\d+/ig, ' ').match(/\d+/);
+  const raw = String(text || '').replace(/_/g, ' ');
+  const sp = raw.match(/splices?\s*[:#-]?\s*(\d+)/i) || raw.match(/(\d+)\s*splices?/i);
+  let locNum = '';
+  const tok = raw.match(/\b(?:FT|SE|S)\s*[-#:.]?\s*0*(\d{1,4})\b/i);
+  if (tok) locNum = String(Number(tok[1]));
+  if (!locNum) { const g = raw.match(/fg\d{2,3}(0\d{3})\b/i); if (g) locNum = String(Number(g[1])); } // mapa + ponto colados
+  if (!locNum) {
+    const cleaned = raw.replace(/splices?\s*[:#-]?\s*\d+/ig, ' ').replace(/\d+\s*splices?/ig, ' ').replace(/\bFG\s*\d+[A-Z]*\b/ig, ' ').replace(/\b(C3|NC|AL)\b/ig, ' ');
+    const n = cleaned.match(/\d+/);
+    locNum = n ? String(Number(n[0])) : '';
+  }
   const type = /\b(tail|end)\b/i.test(raw) ? 'END' : (/\bring\b/i.test(raw) ? 'RING CUT' : '');
-  return { loc: loc ? String(Number(loc[0])) : '', splice: sp ? Number(sp[1]) : null, type };
+  return { loc: locNum, splice: sp ? Number(sp[1]) : null, type, light: /light\s*levels?/i.test(raw) };
 }
 
-// Procura, nas linhas de produção do mapa, o ponto reportado na legenda (número do ponto no LOCATION).
-//   OK = ponto + splice + tipo batem · CHECK = achou o ponto mas splice/tipo diferem · MISSING = ponto não lançado · NONUM = legenda sem número
-function waMatchReport(rep, lines) {
+// Procura, nas linhas de produção do mapa, o ponto reportado na legenda — considerando também a DATA
+// (a foto costuma ser enviada no mesmo dia ou no dia seguinte à produção; até 1 dia de diferença é aceito).
+//   OK = ponto + splice + tipo batem e a data está até 1 dia de diferença · CHECK = achou o ponto mas splice/tipo ou data diferem
+//   MISSING = ponto não lançado · NONUM = legenda sem número
+function waMatchReport(rep, lines, dayIso) {
   if (!rep.loc) return { status: 'NONUM' };
   const cands = lines.filter((l) => l.nums.includes(rep.loc));
-  if (!cands.length) return { status: 'MISSING' };
-  const exact = cands.find((l) => (rep.splice == null || Number(l.splice) === rep.splice) && (!rep.type || String(l.typeEnd || '').toUpperCase() === rep.type));
-  return exact ? { status: 'OK', line: exact } : { status: 'CHECK', line: cands[0] };
+  if (!cands.length) return { status: rep.light ? 'LIGHT' : 'MISSING' }; // light level = foto de teste, não conta como produção faltando
+  const diff = (l) => (!dayIso || !l.date) ? 0 : Math.abs((new Date(`${l.date}T12:00:00`) - new Date(`${dayIso}T12:00:00`)) / 86400000);
+  const near = (l) => (diff(l) <= 1 ? 1 : 0);
+  const same = (l) => ((rep.splice == null || Number(l.splice) === rep.splice) && (!rep.type || String(l.typeEnd || '').toUpperCase() === rep.type)) ? 1 : 0;
+  const best = [...cands].sort((x, y) => (near(y) - near(x)) || (same(y) - same(x)) || (diff(x) - diff(y)))[0];
+  if (same(best) && near(best)) return { status: 'OK', line: best };
+  return { status: 'CHECK', line: best, why: same(best) ? 'DATA' : 'SPLICE' };
 }
+
+const waAddDays = (iso, n) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return waIso(d); };
 
 const waIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 // Semana de faturamento: sábado → sexta
@@ -2814,7 +2833,7 @@ function waWeekRange(isoDay) {
 }
 function waEachDay(startIso, endIso) {
   const out = [];
-  for (let d = new Date(`${startIso}T12:00:00`); waIso(d) <= endIso; d.setDate(d.getDate() + 1)) out.push(waIso(d));
+  for (let d = new Date(`${startIso}T12:00:00`); waIso(d) <= endIso && out.length < 62; d.setDate(d.getDate() + 1)) out.push(waIso(d));
   return out;
 }
 
@@ -2836,21 +2855,30 @@ function WhatsAppTab({ productionList }) {
   const [groupsData] = useRemoteKey('whatsapp_groups');
   const [activity] = useRemoteKey('whatsapp_activity');
   const [config, setConfig] = useRemoteKey('whatsapp_config');
+  const [mapOverrides, setMapOverrides] = useRemoteKey('whatsapp_maps'); // { [idDoGrupo]: "nome certo do mapa" } — escolhido à mão
+  const [editId, setEditId] = useState(null);
+  const [editText, setEditText] = useState('');
   const [mode, setMode] = useState('WEEK'); // WEEK = sáb–sex | DAY
   const [anchor, setAnchor] = useState(() => waIso(new Date()));
   const [search, setSearch] = useState('');
   const [showMode, setShowMode] = useState('AUTO'); // AUTO = acompanhados (ou todos, se nenhum marcado)
   const [openId, setOpenId] = useState(null);
   const [scanAt, setScanAt] = useState(0);
+  const [rFrom, setRFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 6); return waIso(d); }); // período livre: de...
+  const [rTo, setRTo] = useState(() => waIso(new Date())); // ...até
 
   // Comandos para o programa (ele lê a cada ~5s): 'scan' = atualizar agora · 'relink' = reconectar do zero (QR novo + histórico)
-  const sendCommand = (action) => sb.from(APP_STATE_TABLE).upsert({ key: 'whatsapp_command', value: { id: Date.now(), action }, updated_at: new Date().toISOString() });
+  const sendCommand = async (action) => {
+    const { error } = await sb.from(APP_STATE_TABLE).upsert({ key: 'whatsapp_command', value: { id: Date.now(), action }, updated_at: new Date().toISOString() });
+    if (error) { console.error('[WhatsApp] falha ao enviar comando', error); window.alert('Não consegui enviar o comando ao scanner.\n\nErro do Supabase: ' + (error.message || JSON.stringify(error))); }
+    return !error;
+  };
   const scanNow = () => { setScanAt(Date.now()); sendCommand('scan'); };
   const relink = () => {
     if (window.confirm('Reconectar do zero?\n\nO programa vai desconectar este aparelho do seu WhatsApp e mostrar um QR code novo aqui. Depois de ler o QR, o WhatsApp reenvia o histórico recente dos grupos.\n\nUse só quando precisar buscar mensagens antigas.')) sendCommand('relink');
   };
 
-  const range = mode === 'WEEK' ? waWeekRange(anchor) : { start: anchor, end: anchor };
+  const range = mode === 'WEEK' ? waWeekRange(anchor) : mode === 'RANGE' ? { start: rFrom <= rTo ? rFrom : rTo, end: rFrom <= rTo ? rTo : rFrom } : { start: anchor, end: anchor };
   const days = useMemo(() => waEachDay(range.start, range.end), [range.start, range.end]);
   const shift = (n) => { const d = new Date(`${anchor}T12:00:00`); d.setDate(d.getDate() + n * (mode === 'WEEK' ? 7 : 1)); setAnchor(waIso(d)); };
   const fmt = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
@@ -2859,7 +2887,20 @@ function WhatsAppTab({ productionList }) {
   const saveMonitored = (ids) => {
     const value = { monitored: Array.from(ids) };
     setConfig(value);
-    sb.from(APP_STATE_TABLE).upsert({ key: 'whatsapp_config', value, updated_at: new Date().toISOString() });
+    sb.from(APP_STATE_TABLE).upsert({ key: 'whatsapp_config', value, updated_at: new Date().toISOString() }).then(({ error }) => {
+      if (error) { console.error('[WhatsApp] falha ao salvar grupos marcados', error); window.alert('Não consegui salvar os grupos marcados.\n\nErro do Supabase: ' + (error.message || JSON.stringify(error))); }
+    });
+  };
+  const saveMapName = (id, text) => {
+    const clean = String(text || '').trim();
+    const next = { ...(mapOverrides || {}) };
+    if (clean) next[id] = clean; else delete next[id];
+    setEditId(null);
+    if ((mapOverrides || {})[id] === next[id]) return;
+    setMapOverrides(next);
+    sb.from(APP_STATE_TABLE).upsert({ key: 'whatsapp_maps', value: next, updated_at: new Date().toISOString() }).then(({ error }) => {
+      if (error) { console.error('[WhatsApp] falha ao salvar nome do mapa', error); window.alert('Não consegui salvar o nome do mapa.\n\nErro do Supabase: ' + (error.message || JSON.stringify(error))); }
+    });
   };
   const toggle = (id) => { const next = new Set(monitored); next.has(id) ? next.delete(id) : next.add(id); saveMonitored(next); };
 
@@ -2881,27 +2922,65 @@ function WhatsAppTab({ productionList }) {
     }
     return false;
   };
+  // Tolerância na comparação de nomes: ignora zeros à esquerda (FG004 = FG04), palavras como SPLICE/PRODUCTION LIST
+  // e prefixos de empresa no começo do nome (C3 -, NC -, AL - ...). Um mapa pode ter mais de uma "chave" possível.
+  const normZ = (v) => String(v || '').replace(/([A-Z])0+(?=\d)/g, '$1');
+  const stripWords = (v) => String(v || '').replace(/SPLICING|SPLICE|PRODUCTION|LIST|XLSX|OLD/g, '');
+  const mapKeys = (name) => {
+    const raw = String(name || '').toUpperCase();
+    const out = new Set();
+    const add = (x) => {
+      const k = normZ(stripWords(compact(x)));
+      if (k.length >= 4 || (k.length === 3 && /[A-Z]/.test(k) && /\d/.test(k))) out.add(k);
+    };
+    add(raw);
+    const noPrefix = raw.replace(/^\s*[A-Z0-9]{1,3}\s*[-–_.*]\s*/, ''); // tira "C3- ", "NC - ", "AL-"
+    add(noPrefix);
+    const first = noPrefix.split(/\s*[-–]\s*/)[0]; // ex.: "JS37E - SPLICE ERVIN" → "JS37E" (só se tiver letra e número)
+    if (/\d/.test(first) && /[A-Z]/i.test(first)) add(first);
+    return Array.from(out);
+  };
   const mapInfo = useMemo(() => {
     const byMap = new Map();
     (productionList || []).forEach((p) => {
       const name = String(p.map || '').trim();
       const key = compact(name);
-      if (key.length < 4) return; // evita casar com nomes curtos demais
-      const cur = byMap.get(key) || { name, key, lines: [] };
+      const keys = mapKeys(name);
+      if (!keys.length) return; // evita casar com nomes curtos demais
+      const cur = byMap.get(key) || { name, key, keys, lines: [] };
       cur.lines.push({ date: toIso(p.date), location: p.location || '', splice: p.splice, typeEnd: p.typeEnd, nums: (String(p.location || '').match(/\d+/g) || []).map((n) => String(Number(n))) });
       byMap.set(key, cur);
     });
     return Array.from(byMap.values());
   }, [productionList]);
 
+  // Arquivos das planilhas, da última varredura feita na aba SCANNER DRIVE (fica salvo neste navegador)
+  const driveResults = useMemo(() => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_RESULTS) || 'null') || []; } catch (e) { return []; } }, []);
+
   const rows = useMemo(() => {
     const names = {};
     (groupsData?.groups || []).forEach((g) => { names[g.id] = g.name; });
     Object.entries(activity?.groups || {}).forEach(([id, g]) => { if (!names[id]) names[id] = g.name; });
     return Object.entries(names).map(([id, name]) => {
-      const gk = compact(name);
-      const matched = mapInfo.filter((m) => hasMapKey(gk, m.key));
+      const gk = normZ(compact(name));
+      const ov = (mapOverrides && mapOverrides[id]) || '';
+      let matched;
+      if (ov) {
+        const ok = normZ(compact(ov));
+        matched = mapInfo.filter((m) => m.key === compact(ov) || m.keys.includes(ok));
+        if (!matched.length) matched = mapInfo.filter((m) => m.keys.some((k) => hasMapKey(ok, k)));
+      } else {
+        matched = mapInfo.filter((m) => m.keys.some((k) => hasMapKey(gk, k)));
+      }
       const lines = matched.flatMap((m) => m.lines).filter((l) => l.date >= range.start && l.date <= range.end);
+      const wideFrom = waAddDays(range.start, -1), wideTo = waAddDays(range.end, 1); // 1 dia de folga para casar foto x produção
+      const linesWide = matched.flatMap((m) => m.lines).filter((l) => l.date >= wideFrom && l.date <= wideTo);
+      const lookup = ov ? normZ(compact(ov)) : gk;
+      const driveCands = (driveResults || []).filter((dr) => {
+        const dk = [...mapKeys(dr.mapName), ...mapKeys(dr.fileName)];
+        return dk.some((k) => hasMapKey(lookup, k)) || matched.some((m) => m.keys.some((k) => dk.some((d) => hasMapKey(d, k))));
+      }).sort((x, y) => ((/OLD/i.test(x.fileName || '') ? 1 : 0) - (/OLD/i.test(y.fileName || '') ? 1 : 0)) || String(y.modifiedTime || '').localeCompare(String(x.modifiedTime || '')));
+      const drive = driveCands[0] || null;
       let photos = 0, last = 0;
       const senders = {}, captions = [];
       days.forEach((d) => {
@@ -2913,7 +2992,7 @@ function WhatsAppTab({ productionList }) {
         (dd.captions || []).forEach((c) => captions.push(c));
       });
       captions.sort((a, b) => a.ms - b.ms);
-      const reports = captions.map((c) => { const rep = waParseCaption(c.text); return { ...c, rep, ...waMatchReport(rep, lines) }; });
+      const reports = captions.map((c) => { const rep = waParseCaption(c.text); return { ...c, rep, ...(matched.length ? waMatchReport(rep, linesWide, waIso(new Date(c.ms))) : { status: 'NOMAP' }) }; });
       const count = (s) => reports.filter((r) => r.status === s).length;
       const miss = count('MISSING'), check = count('CHECK');
       let state = 'NONE';
@@ -2923,15 +3002,17 @@ function WhatsAppTab({ productionList }) {
         else state = lines.length ? 'OK' : 'MISSING'; // fotos sem legenda: só dá pra saber se há alguma produção lançada no período
       }
       const who = Object.entries(senders).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n, c]) => `${n} (${c})`).join(', ');
-      return { id, name, photos, state, matched, launched: lines.length, who, last, reports, miss, check };
+      return { id, name, ov, drive, photos, state, matched, launched: lines.length, who, last, reports, miss, check };
     });
-  }, [groupsData, activity, mapInfo, days, range.start, range.end]);
+  }, [groupsData, activity, mapInfo, mapOverrides, driveResults, days, range.start, range.end]);
 
   const order = { MISSING: 0, CHECK: 1, NOMAP: 2, OK: 3, NONE: 4 };
   const visible = rows
-    .filter((r) => (showMode === 'ALL' || monitored.size === 0) ? true : monitored.has(r.id))
+    .filter((r) => (search.trim() || showMode === 'ALL' || monitored.size === 0) ? true : monitored.has(r.id))
     .filter((r) => !search.trim() || compact(r.name).includes(compact(search)))
     .sort((a, b) => (order[a.state] - order[b.state]) || b.photos - a.photos || a.name.localeCompare(b.name));
+  const allVisibleOn = visible.length > 0 && visible.every((r) => monitored.has(r.id));
+  const toggleAllVisible = () => { const next = new Set(monitored); visible.forEach((r) => (allVisibleOn ? next.delete(r.id) : next.add(r.id))); saveMonitored(next); };
   const tracked = rows.filter((r) => monitored.has(r.id));
   const totalReports = tracked.reduce((s, r) => s + r.reports.length, 0);
   const totalMiss = tracked.reduce((s, r) => s + r.miss, 0);
@@ -2946,9 +3027,11 @@ function WhatsAppTab({ productionList }) {
   };
   const repBadge = (r) => ({
     OK: pill('LANÇADO', C.green, C.greenSoft),
-    CHECK: pill('CONFERIR SPLICE/TIPO', C.amber, C.amberSoft),
+    CHECK: pill(r.why === 'DATA' ? 'CONFERIR DATA' : 'CONFERIR SPLICE/TIPO', C.amber, C.amberSoft),
     MISSING: pill('NÃO LANÇADO', C.red, C.redSoft),
     NONUM: pill('LEGENDA SEM NÚMERO', C.textDim, 'transparent'),
+    NOMAP: pill('DEFINA O MAPA', C.amber, C.amberSoft),
+    LIGHT: pill('LIGHT LEVEL', C.textDim, 'transparent'),
   }[r.status]);
 
   const card = { background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 8, padding: 16, marginBottom: 14 };
@@ -2976,7 +3059,7 @@ function WhatsAppTab({ productionList }) {
             <div style={{ fontSize: 12, color: C.text, lineHeight: 1.6 }}>No celular: WhatsApp → <b>Aparelhos conectados</b> → <b>Conectar um aparelho</b> → leia este QR code.<br />Depois, marque abaixo quais grupos acompanhar.</div>
           </div>
         )}
-        {st === 'open' && (
+        {(st === 'open' || st === 'starting' || st === 'closed') && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
             {(() => {
               const scanning = scanAt > 0 && !(status.lastScanAt && new Date(status.lastScanAt).getTime() >= scanAt) && Date.now() - scanAt < 30000;
@@ -2987,6 +3070,8 @@ function WhatsAppTab({ productionList }) {
               );
             })()}
             <button onClick={relink} style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 4, padding: '7px 12px', fontSize: 11, cursor: 'pointer' }}>Reconectar do zero (buscar histórico)</button>
+            <button onClick={() => sendCommand('history')} title="Pede ao WhatsApp mensagens mais antigas dos grupos marcados (o celular precisa estar com internet). Pode clicar mais de uma vez para voltar mais no tempo." style={{ background: 'transparent', color: C.textDim, border: `1px solid ${C.border2}`, borderRadius: 4, padding: '7px 12px', fontSize: 11, cursor: 'pointer' }}>Buscar mensagens antigas (teste)</button>
+            {status.lastHistoryAt && <span style={{ fontSize: 11, color: C.textDim }}>Pedido de histórico: {clock(status.lastHistoryAt)}</span>}
             {status.lastScanAt && <span style={{ fontSize: 11, color: C.textDim }}>Último escaneamento: {clock(status.lastScanAt)}</span>}
           </div>
         )}
@@ -3002,10 +3087,21 @@ function WhatsAppTab({ productionList }) {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>
           <button onClick={() => setMode('WEEK')} style={btn(mode === 'WEEK')}>Semana (sáb–sex)</button>
           <button onClick={() => setMode('DAY')} style={btn(mode === 'DAY')}>Dia</button>
-          <button onClick={() => shift(-1)} style={btn(false)}>◀</button>
-          <span style={{ fontSize: 12, fontWeight: 700, color: C.text, minWidth: 120, textAlign: 'center' }}>{mode === 'WEEK' ? `${fmt(range.start)} → ${fmt(range.end)}` : fmt(range.start)}</span>
-          <button onClick={() => shift(1)} style={btn(false)}>▶</button>
-          <button onClick={() => setAnchor(waIso(new Date()))} style={btn(false)}>Hoje</button>
+          <button onClick={() => setMode('RANGE')} style={btn(mode === 'RANGE')}>Período</button>
+          {mode === 'RANGE' ? (
+            <>
+              <Input type="date" value={rFrom} onChange={(e) => e.target.value && setRFrom(e.target.value)} style={{ width: 140, colorScheme: 'dark' }} />
+              <span style={{ fontSize: 11, color: C.textDim }}>até</span>
+              <Input type="date" value={rTo} onChange={(e) => e.target.value && setRTo(e.target.value)} style={{ width: 140, colorScheme: 'dark' }} />
+            </>
+          ) : (
+            <>
+              <button onClick={() => shift(-1)} style={btn(false)}>◀</button>
+              <span style={{ fontSize: 12, fontWeight: 700, color: C.text, minWidth: 120, textAlign: 'center' }}>{mode === 'WEEK' ? `${fmt(range.start)} → ${fmt(range.end)}` : fmt(range.start)}</span>
+              <button onClick={() => shift(1)} style={btn(false)}>▶</button>
+              <button onClick={() => setAnchor(waIso(new Date()))} style={btn(false)}>Hoje</button>
+            </>
+          )}
         </div>
       </div>
 
@@ -3014,18 +3110,23 @@ function WhatsAppTab({ productionList }) {
         <button onClick={() => setShowMode(showMode === 'ALL' ? 'AUTO' : 'ALL')} style={btn(false)}>
           {showMode === 'ALL' || monitored.size === 0 ? 'Mostrando: todos os grupos' : 'Mostrando: só acompanhados'}
         </button>
-        <button onClick={() => saveMonitored(new Set(visible.map((r) => r.id)))} style={btn(false)}>Acompanhar os listados</button>
+        <button onClick={() => saveMonitored(new Set(visible.map((r) => r.id)))} style={btn(false)}>Acompanhar só os listados</button>
         <button onClick={() => saveMonitored(new Set())} style={{ ...btn(false), color: C.textDim }}>Limpar seleção</button>
       </div>
 
       {monitored.size > 0 && st === 'open' && tracked.length > 0 && tracked.every((r) => r.photos === 0) && <div style={{ color: C.amber, fontSize: 12, marginBottom: 10 }}>Nenhuma foto contada nesse período ainda. Clique em <b>Escanear Agora</b> para atualizar. Se continuar vazio, o WhatsApp pode não ter enviado histórico desses grupos — use "Reconectar do zero" para pedir de novo, ou navegue para outra semana.</div>}
       {monitored.size === 0 && rows.length > 0 && <div style={{ color: C.amber, fontSize: 12, marginBottom: 10 }}>Nenhum grupo marcado ainda — marque abaixo os grupos que devem ser acompanhados. Só a partir daí as fotos começam a ser contadas.</div>}
 
+      <datalist id="wa-map-names">{mapInfo.map((m) => <option key={m.key} value={m.name} />)}</datalist>
       <div style={{ ...card, padding: 0, overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
           <thead>
             <tr style={{ color: C.textDim, textAlign: 'left', fontSize: 10, letterSpacing: 1 }}>
-              {['ACOMP.', 'GRUPO', 'MAPA NA PRODUÇÃO', 'FOTOS', 'PONTOS', 'QUEM MANDOU', 'LINHAS LANÇADAS', 'SITUAÇÃO'].map((h) => <th key={h} style={{ padding: '10px', borderBottom: `1px solid ${C.border2}` }}>{h}</th>)}
+              {['ACOMP.', 'GRUPO', 'MAPA NA PRODUÇÃO', 'ARQUIVO DA PLANILHA', 'FOTOS', 'PONTOS', 'QUEM MANDOU', 'LINHAS LANÇADAS', 'SITUAÇÃO'].map((h) => (
+                <th key={h} style={{ padding: '10px', borderBottom: `1px solid ${C.border2}`, whiteSpace: 'nowrap' }}>
+                  {h === 'ACOMP.' && <input type="checkbox" checked={allVisibleOn} onChange={toggleAllVisible} title="Marcar / desmarcar todos os grupos listados" style={{ marginRight: 6, verticalAlign: 'middle' }} />}{h}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -3036,7 +3137,24 @@ function WhatsAppTab({ productionList }) {
                   <td style={{ ...tdStyleDrive, cursor: r.reports.length ? 'pointer' : 'default' }} onClick={() => r.reports.length && setOpenId(openId === r.id ? null : r.id)}>
                     <strong>{r.name}</strong>{r.reports.length ? <span style={{ color: C.accent, fontSize: 10 }}> {openId === r.id ? '▲' : '▼ ver pontos'}</span> : null}
                   </td>
-                  <td style={{ ...tdStyleDrive, color: C.textDim }}>{r.matched.length ? r.matched.slice(0, 2).map((m) => m.name).join(', ') : '—'}</td>
+                  <td style={{ ...tdStyleDrive, color: C.textDim }}>
+                    {editId === r.id ? (
+                      <Input list="wa-map-names" autoFocus placeholder="nome do mapa (vazio = automático)" value={editText}
+                        onChange={(e) => setEditText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveMapName(r.id, editText); if (e.key === 'Escape') setEditId(null); }}
+                        onBlur={() => saveMapName(r.id, editText)} style={{ width: 230 }} />
+                    ) : (
+                      <span onClick={() => { setEditId(r.id); setEditText(r.ov || ''); }} style={{ cursor: 'pointer' }} title="Clique para definir o nome certo do mapa na produção">
+                        {r.matched.length ? r.matched.slice(0, 2).map((m) => m.name).join(', ') : (r.ov ? <span style={{ color: C.amber }}>{r.ov} (não encontrado)</span> : '—')}
+                        <span style={{ color: r.ov ? C.green : C.accent, fontSize: 10 }}> ✎</span>
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ ...tdStyleDrive, color: C.textDim, maxWidth: 260 }}>
+                    {r.drive && r.drive.webViewLink
+                      ? <a href={r.drive.webViewLink} target="_blank" rel="noreferrer" title={r.drive.fileName} style={{ color: C.accent, textDecoration: 'underline', display: 'inline-block', maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.drive.fileName}</a>
+                      : '—'}
+                  </td>
                   <td style={{ ...tdStyleDrive, color: r.photos ? C.green : C.textDim, fontWeight: 700 }}>{r.photos}</td>
                   <td style={tdStyleDrive}>{r.reports.length || '—'}</td>
                   <td style={{ ...tdStyleDrive, color: C.textDim }}>{r.who || '—'}</td>
@@ -3044,7 +3162,7 @@ function WhatsAppTab({ productionList }) {
                   <td style={tdStyleDrive}>{monitored.has(r.id) ? badge(r) : <span style={{ fontSize: 10, color: C.textFaint }}>não acompanhado</span>}</td>
                 </tr>
                 {openId === r.id && (
-                  <tr><td colSpan={8} style={{ padding: '6px 14px 14px 40px', background: C.panel2 }}>
+                  <tr><td colSpan={9} style={{ padding: '6px 14px 14px 40px', background: C.panel2 }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                       <thead><tr style={{ color: C.textDim, textAlign: 'left', fontSize: 10 }}>{['QUANDO', 'QUEM', 'LEGENDA DA FOTO', 'SITUAÇÃO', 'LINHA NA PRODUÇÃO'].map((h) => <th key={h} style={{ padding: '6px 8px' }}>{h}</th>)}</tr></thead>
                       <tbody>
@@ -3063,7 +3181,7 @@ function WhatsAppTab({ productionList }) {
                 )}
               </React.Fragment>
             ))}
-            {visible.length === 0 && <tr><td colSpan={8} style={{ padding: 20, color: C.textDim, textAlign: 'center' }}>{rows.length ? 'Nenhum grupo encontrado.' : 'A lista de grupos aparece aqui assim que o WhatsApp estiver conectado.'}</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={9} style={{ padding: 20, color: C.textDim, textAlign: 'center' }}>{rows.length ? 'Nenhum grupo encontrado.' : 'A lista de grupos aparece aqui assim que o WhatsApp estiver conectado.'}</td></tr>}
           </tbody>
         </table>
       </div>
