@@ -5487,7 +5487,14 @@ function ProductionDashboard() {
 
   const exportGeneralXLSX = async () => {
     const daySuffix = selectedDeliveryDay === "ALL" ? "TODAS_ENTREGAS" : selectedDeliveryDay.replace(/\s+/g, "_");
-    await exportGeneralXLSXForItems(generalTableItems, `Controle_Geral_${daySuffix}`);
+    // Com "Só com pendência no Drive" marcado, exporta apenas os mapas com pendência no Drive
+    // (exatamente o que aparece na tabela); desmarcado, exporta todos do dia selecionado.
+    const itemsToExport = onlyDrivePending ? generalTableItemsDisplayed : generalTableItems;
+    if (onlyDrivePending && itemsToExport.length === 0) {
+      alert('Nenhum mapa com pendência no Drive para exportar. Rode/atualize a varredura do Drive ou desmarque o filtro.');
+      return;
+    }
+    await exportGeneralXLSXForItems(itemsToExport, `Controle_Geral_${daySuffix}${onlyDrivePending ? "_SO_PENDENCIA_DRIVE" : ""}`);
   };
 
   return (
