@@ -142,6 +142,7 @@ const EN_DICT = {
   'Nenhuma varredura salva ainda — rode uma na aba Scanner Drive.': 'No scan saved yet — run one in the Drive Scanner tab.',
   'Escanear Drive': 'Scan Drive',
   'Só com pendência no Drive': 'Only Drive pending',
+  'Só com produção marcada': 'Only with work logged',
   'Buscar por mapa, técnico...': 'Search by map, technician...',
   'ENTREGA': 'DELIVERY',
   'MAPA / CÓDIGO': 'MAP / CODE',
@@ -4278,6 +4279,10 @@ function ProductionDashboard() {
     try { localStorage.setItem(STORAGE_KEY_DRIVE_SCAN_LAST, v || ''); } catch (e) {}
   });
   const [onlyDrivePending, setOnlyDrivePending] = useState(false);
+  // "Só com produção marcada": mostra os mapas em que algum estágio (AS-BUILT / INVOICE /
+  // WORKBOOK) já foi marcado como FAZENDO, ATUALIZADO ou ENTREGUE — mesmo que a pendência do
+  // Drive já tenha zerado (ex.: fechou o invoice antes do dia do fechamento).
+  const [onlyWorked, setOnlyWorked] = useState(false);
   // Feedback visual rápido (2s) no botão "Atualizar Drive" pra deixar claro que o clique funcionou,
   // já que ele só recarrega o cache local (não sai buscando nada novo sozinho no Google Drive).
   const [driveRefreshFlash, setDriveRefreshFlash] = useState(false);
@@ -4451,12 +4456,20 @@ function ProductionDashboard() {
   // Drive" está marcado, esconde os mapas que a varredura do Drive não achou (ou achou "em
   // dia"), sem afetar os cálculos de progresso/KPIs que usam generalTableItems inteiro.
   const generalTableItemsDisplayed = useMemo(() => {
-    if (!onlyDrivePending) return generalTableItems;
+    if (!onlyDrivePending && !onlyWorked) return generalTableItems;
+    const WORKED = ["FAZENDO", "OK", "SIM", "ENTREGUE"];
     return generalTableItems.filter((item) => {
-      const dr = getDriveResultForItem(item.map);
-      return dr && !dr.error && (dr.pendingCount || 0) > 0;
+      // Com os dois filtros marcados, aparece quem tem pendência no Drive OU produção marcada.
+      if (onlyDrivePending) {
+        const dr = getDriveResultForItem(item.map);
+        if (dr && !dr.error && (dr.pendingCount || 0) > 0) return true;
+      }
+      if (onlyWorked) {
+        if (WORKED.includes(item.asbuiltStatus) || WORKED.includes(item.invoiceStatus) || WORKED.includes(item.workbookStatus)) return true;
+      }
+      return false;
     });
-  }, [generalTableItems, onlyDrivePending, driveScanResults]);
+  }, [generalTableItems, onlyDrivePending, onlyWorked, driveScanResults]);
 
   // Progressão separada por etapa (AS-BUILT / INVOICE / WORKBOOK) dentro do dia de entrega
   // selecionado — permite ver, por exemplo, que o AS-BUILT de quinta-feira já está quase
@@ -5489,12 +5502,14 @@ function ProductionDashboard() {
     const daySuffix = selectedDeliveryDay === "ALL" ? "TODAS_ENTREGAS" : selectedDeliveryDay.replace(/\s+/g, "_");
     // Com "Só com pendência no Drive" marcado, exporta apenas os mapas com pendência no Drive
     // (exatamente o que aparece na tabela); desmarcado, exporta todos do dia selecionado.
-    const itemsToExport = onlyDrivePending ? generalTableItemsDisplayed : generalTableItems;
-    if (onlyDrivePending && itemsToExport.length === 0) {
-      alert('Nenhum mapa com pendência no Drive para exportar. Rode/atualize a varredura do Drive ou desmarque o filtro.');
+    const anyFilter = onlyDrivePending || onlyWorked;
+    const itemsToExport = anyFilter ? generalTableItemsDisplayed : generalTableItems;
+    if (anyFilter && itemsToExport.length === 0) {
+      alert('Nenhum mapa para exportar com o(s) filtro(s) marcado(s). Atualize a varredura do Drive ou desmarque o filtro.');
       return;
     }
-    await exportGeneralXLSXForItems(itemsToExport, `Controle_Geral_${daySuffix}${onlyDrivePending ? "_SO_PENDENCIA_DRIVE" : ""}`);
+    const filterSuffix = (onlyDrivePending ? "_PENDENCIA_DRIVE" : "") + (onlyWorked ? "_PRODUCAO_MARCADA" : "");
+    await exportGeneralXLSXForItems(itemsToExport, `Controle_Geral_${daySuffix}${filterSuffix}`);
   };
 
   return (
@@ -6372,6 +6387,10 @@ function ProductionDashboard() {
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: C.textDim, cursor: "pointer", userSelect: "none" }} title="Mostra só os mapas que a última varredura do Drive encontrou com linhas pendentes">
                 <input type="checkbox" checked={onlyDrivePending} onChange={(e) => setOnlyDrivePending(e.target.checked)} style={{ cursor: "pointer" }} />
                 {t('Só com pendência no Drive')}
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: C.textDim, cursor: "pointer", userSelect: "none" }} title="Mostra só os mapas que já tiveram AS-BUILT, Invoice ou Workbook marcado como FAZENDO, ATUALIZADO ou ENTREGUE (mesmo que a pendência do Drive já tenha zerado). Marcado junto com 'Só com pendência no Drive', mostra os dois grupos.">
+                <input type="checkbox" checked={onlyWorked} onChange={(e) => setOnlyWorked(e.target.checked)} style={{ cursor: "pointer" }} />
+                {t('Só com produção marcada')}
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "5px 10px" }}>
                 <Search size={12} color={C.textFaint} />
