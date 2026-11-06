@@ -1316,6 +1316,70 @@ function Input(props) {
   );
 }
 
+
+// Campo "criável": digita pra filtrar as opções já salvas; se o nome ainda não existe, aparece
+// "+ Criar 'NOME'" — clicou, ele é salvo e nas próximas vezes é só selecionar na lista.
+function CreatableInput({ value, onChange, options = [], onCreate, onRemove, placeholder }) {
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const norm = (s) => String(s || '').trim().toUpperCase();
+  const q = norm(value);
+  const filtered = options.filter((o) => !q || norm(o).includes(q));
+  const exact = options.some((o) => norm(o) === q);
+  const canCreate = !!q && !exact;
+  const items = [...filtered.map((o) => ({ type: 'opt', label: o })), ...(canCreate ? [{ type: 'new', label: q }] : [])];
+  const pick = (item) => {
+    if (!item) return;
+    if (item.type === 'new' && onCreate) onCreate(item.label);
+    onChange(item.label);
+    setOpen(false);
+  };
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value || ''}
+        placeholder={placeholder}
+        autoComplete="off"
+        onFocus={() => { setOpen(true); setHi(0); }}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); setHi(0); }}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHi((h) => Math.min(h + 1, items.length - 1)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
+          else if (e.key === 'Enter' && open && items.length) { e.preventDefault(); pick(items[Math.min(hi, items.length - 1)]); }
+          else if (e.key === 'Escape') setOpen(false);
+        }}
+        style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px 10px", fontSize: 11, outline: "none", fontFamily: "'JetBrains Mono', monospace", width: "100%", boxSizing: "border-box" }}
+      />
+      {open && items.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 3, background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 5, zIndex: 60, maxHeight: 190, overflowY: "auto", boxShadow: "0 6px 18px rgba(0,0,0,0.5)" }}>
+          {items.map((it, idx) => (
+            <div
+              key={it.type + it.label}
+              onMouseDown={(e) => { e.preventDefault(); pick(it); }}
+              onMouseEnter={() => setHi(idx)}
+              style={{ padding: "8px 10px", fontSize: 11, cursor: "pointer", color: it.type === 'new' ? C.accent : C.text, fontWeight: it.type === 'new' ? 700 : 500, background: idx === hi ? C.panel2 : "transparent", borderTop: it.type === 'new' && idx > 0 ? `1px solid ${C.border2}` : "none" }}
+            >
+              {it.type === 'new' ? `+ Criar "${it.label}"` : (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span>{it.label}</span>
+                  {onRemove && (
+                    <span
+                      title="Apagar esta opção da lista"
+                      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(it.label); }}
+                      style={{ color: C.red, fontWeight: 800, fontSize: 13, lineHeight: 1, padding: "0 5px", cursor: "pointer", borderRadius: 3 }}
+                    >×</span>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Field({ label, children }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
@@ -2628,6 +2692,15 @@ function parseUSShortDate(str) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// Marcador de fechamento do ciclo: a célula é "END INVOICE" ou "INVOICED" (aceita variações como
+// "END-INVOICE", "ENDINVOICE", e uma data/pontuação depois: "INVOICED 11/05"). Compara a célula
+// INTEIRA (não "contém"), pra um texto livre tipo "faltou invoiced por fulano" não fechar o mapa sem querer.
+function isInvoiceMarkerCell(cell) {
+  const v = String(cell == null ? '' : cell).trim().toUpperCase();
+  if (!v) return false;
+  return /^(END[\s\-_]*INVOICE|INVOICED)[\s\-–:.!\d\/]*$/.test(v);
+}
+
 // fallbackStartDate ('YYYY-MM-DD' ou null): usado SÓ quando a aba não tem nenhum "END INVOICE"
 // marcado — nesse caso, em vez de considerar a aba inteira pendente (ou zerada), conta como
 // pendente qualquer linha com data dentro do ciclo de faturamento atual (>= data informada).
@@ -2706,7 +2779,8 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
     const hasContent = row.some((c) => String(c == null ? '' : c).trim() !== '');
     if (!hasContent) continue;
 
-    if (locCell === 'END INVOICE') {
+    // O marcador pode estar em QUALQUER coluna da linha (nem sempre colocam em LOCATION).
+    if (row.some(isInvoiceMarkerCell)) {
       lastInvoiceRelIdx = dataRows.length;
       continue; // a própria linha do marcador não entra como pendência
     }
@@ -3900,7 +3974,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
                       <td style={{ ...tdStyleDrive, fontWeight: 800, color: r.error ? C.textFaint : (r.pendingCount > 0 ? C.red : C.green) }}>
                         {r.error ? `${t('ERRO:')} ${r.error.slice(0, 220)}` : (r.pendingCount === 0 ? t('EM DIA') : `${r.pendingCount} ${t('linha(s) pendente(s)')}`)}
                         {r.usedDateFallback && r.pendingCount > 0 && (
-                          <span title="Essa planilha não tem nenhum 'END INVOICE' marcado — a contagem usou a data de início do ciclo de faturamento como critério." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
+                          <span title="Essa planilha não tem nenhum 'END INVOICE' nem 'INVOICED' marcado — a contagem usou a data de início do ciclo de faturamento como critério." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
                             {t('por data')}
                           </span>
                         )}
@@ -4571,6 +4645,64 @@ function ProductionDashboard() {
     }
   }, [projects]);
   useCloudSync('projects', [projects], () => projects, (v) => setProjects(migrateProjectsList(v)));
+
+  // ===== OPÇÕES CRIÁVEIS (técnicos, dias de entrega) =====
+  // Cria uma vez ("+ Criar 'MARCIO'") e nas próximas é só selecionar. Salva no navegador e na nuvem
+  // (junção sem perder nada). Além das criadas, já aparecem os nomes/dias que existem nos mapas cadastrados.
+  const [customOptions, setCustomOptions] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem('CONTROL_PRO_CUSTOM_OPTIONS_V1') || 'null') || {}; return { tech: v.tech || [], day: v.day || [], removed: { tech: (v.removed && v.removed.tech) || [], day: (v.removed && v.removed.day) || [] } }; }
+    catch (e) { return { tech: [], day: [], removed: { tech: [], day: [] } }; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('CONTROL_PRO_CUSTOM_OPTIONS_V1', JSON.stringify(customOptions)); } catch (e) {}
+  }, [customOptions]);
+  useCloudSync('custom_options', [customOptions], () => customOptions, (v) => {
+    if (!v || typeof v !== 'object') return;
+    const arr = (x) => (Array.isArray(x) ? x : []);
+    setCustomOptions({ tech: arr(v.tech), day: arr(v.day), removed: { tech: arr(v.removed && v.removed.tech), day: arr(v.removed && v.removed.day) } });
+  });
+  const createOption = (kind, value) => {
+    const val = String(value || '').trim().toUpperCase();
+    if (!val || (kind !== 'tech' && kind !== 'day')) return;
+    setCustomOptions((prev) => {
+      const rem = (prev.removed && prev.removed[kind]) || [];
+      const has = (prev[kind] || []).includes(val);
+      if (has && !rem.includes(val)) return prev;
+      return {
+        ...prev,
+        [kind]: has ? prev[kind] : [...(prev[kind] || []), val],
+        removed: { ...(prev.removed || {}), [kind]: rem.filter((x) => x !== val) },
+      };
+    });
+  };
+  // Apaga a opção da lista de sugestões (não mexe nos mapas já cadastrados). Fica registrada como
+  // "removida" pra não voltar sozinha só porque algum mapa antigo ainda usa esse nome.
+  const removeOption = (kind, value) => {
+    const val = String(value || '').trim().toUpperCase();
+    if (!val || (kind !== 'tech' && kind !== 'day')) return;
+    setCustomOptions((prev) => {
+      const rem = (prev.removed && prev.removed[kind]) || [];
+      return {
+        ...prev,
+        [kind]: (prev[kind] || []).filter((x) => String(x).trim().toUpperCase() !== val),
+        removed: { ...(prev.removed || {}), [kind]: rem.includes(val) ? rem : [...rem, val] },
+      };
+    });
+  };
+  const techOptions = useMemo(() => {
+    const set = new Set((customOptions.tech || []).map((x) => String(x).trim().toUpperCase()));
+    projects.forEach((p) => {
+      [p.asbuiltTech, p.workbookTech, p.invoiceTech].forEach((x) => { const v = String(x || '').trim().toUpperCase(); if (v) set.add(v); });
+    });
+    const removed = new Set(((customOptions.removed && customOptions.removed.tech) || []));
+    return Array.from(set).filter((v) => v && !removed.has(v)).sort();
+  }, [customOptions, projects]);
+  const dayOptions = useMemo(() => {
+    const set = new Set((customOptions.day || []).map((x) => String(x).trim().toUpperCase()));
+    projects.forEach((p) => { const v = String(p.deliveryDay || '').trim().toUpperCase(); if (v) set.add(v); });
+    const removed = new Set(((customOptions.removed && customOptions.removed.day) || []));
+    return Array.from(set).filter((v) => v && !removed.has(v)).sort();
+  }, [customOptions, projects]);
 
   // Cria no Dashboard (Controle Geral) os mapas que o Scanner Drive achou e ainda não existem aqui.
   // Entram zerados (sem OTs, sem status), no ciclo atualmente selecionado, igual ao "Novo Mapa" do Controle Geral.
@@ -6753,6 +6885,10 @@ function ProductionDashboard() {
           openWeek={openWeek}
           productionList={productionList}
           weekDateRanges={weekDateRanges}
+          techOptions={techOptions}
+          dayOptions={dayOptions}
+          onCreateOption={createOption}
+          onRemoveOption={removeOption}
           onClose={() => { setShowModal(false); setEditingItem(null); }}
           onSave={handleSaveItem}
         />
@@ -7316,7 +7452,7 @@ function ProductionModal({ initial, onClose, onSave, codeFields = CODE_FIELDS, o
   );
 }
 
-function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, productionList = [], weekDateRanges = {} }) {
+function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, productionList = [], weekDateRanges = {}, techOptions = [], dayOptions = [], onCreateOption = null, onRemoveOption = null }) {
   const { t } = useLang();
   const today = new Date().toISOString().slice(0, 10);
   const [addOtInput, setAddOtInput] = useState("");
@@ -7341,6 +7477,15 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
   });
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const setVal = (k) => (v) => setForm(f => ({ ...f, [k]: v }));
+  const saveForm = () => {
+    if (onCreateOption) {
+      const changed = (k) => (form[k] || '').trim().toUpperCase() !== ((initial && initial[k]) || '').trim().toUpperCase();
+      ['asbuiltTech', 'workbookTech', 'invoiceTech'].forEach((k) => { if ((form[k] || '').trim() && changed(k)) onCreateOption('tech', form[k]); });
+      if ((form.deliveryDay || '').trim() && changed('deliveryDay')) onCreateOption('day', form.deliveryDay);
+    }
+    onSave(form);
+  };
 
   // ===== SUGESTÃO AUTOMÁTICA DE "OTs PENDENTES" A PARTIR DA PRODUÇÃO =====
   // Conta, na aba Produção, quantas linhas desse MESMO mapa ainda não estão marcadas "FEITO".
@@ -7494,13 +7639,13 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
                 <option value="ENTREGUE">{t('ENTREGUE')}</option>
               </select>
             </Field>
-            <Field label={t('Seu Nome (Técnico)')}><Input placeholder={t('Nome de quem está atualizando...')} value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
+            <Field label={t('Seu Nome (Técnico)')}><CreatableInput placeholder={t('Nome de quem está atualizando...')} value={form.asbuiltTech} onChange={setVal("asbuiltTech")} options={techOptions} onCreate={(v) => onCreateOption && onCreateOption('tech', v)} onRemove={(v) => onRemoveOption && onRemoveOption('tech', v)} /></Field>
             <Field label={t('Data')}><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
           </div>
 
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
             <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>{t('Cancelar')}</button>
-            <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Salvar Atualização')}</button>
+            <button onClick={saveForm} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Salvar Atualização')}</button>
           </div>
         </div>
       </div>
@@ -7519,7 +7664,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
-          <Field label={t('Dia de Entrega')}><Input placeholder={t('Ex: QUINTA')} value={form.deliveryDay} onChange={set("deliveryDay")} /></Field>
+          <Field label={t('Dia de Entrega')}><CreatableInput placeholder={t('Ex: QUINTA')} value={form.deliveryDay} onChange={setVal("deliveryDay")} options={dayOptions} onCreate={(v) => onCreateOption && onCreateOption('day', v)} onRemove={(v) => onRemoveOption && onRemoveOption('day', v)} /></Field>
           <Field label={t('Mapa / Código')}><Input placeholder="Ex: AL-LE45E" value={form.map} onChange={set("map")} /></Field>
           <Field label={t('Atribuir à Semana')}>
             <select value={form.cycle} onChange={set("cycle")} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "8px", fontSize: 11, outline: "none" }}>
@@ -7571,7 +7716,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
                 </select>
               </Field>
               <Field label={t('Data AS-BUILT')}><Input type="date" value={form.asbuiltDate} onChange={set("asbuiltDate")} /></Field>
-              <Field label={t('Técnico AS-BUILT')}><Input placeholder={t('Nome do técnico...')} value={form.asbuiltTech} onChange={set("asbuiltTech")} /></Field>
+              <Field label={t('Técnico AS-BUILT')}><CreatableInput placeholder={t('Nome do técnico...')} value={form.asbuiltTech} onChange={setVal("asbuiltTech")} options={techOptions} onCreate={(v) => onCreateOption && onCreateOption('tech', v)} onRemove={(v) => onRemoveOption && onRemoveOption('tech', v)} /></Field>
             </div>
             <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 8, lineHeight: 1.5 }}>
               {t('Preencha o nome do técnico antes de marcar')} <strong style={{ color: C.amber }}>{t('FAZENDO')}</strong> {t('ou')} <strong style={{ color: C.green }}>{t('ATUALIZADO')}</strong> — {t('o mapa continua aparecendo na Fila de Prioridade enquanto estiver "FAZENDO" ou com OTs pendentes.')}
@@ -7591,7 +7736,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
               </select>
             </Field>
             <Field label={t('Data Atualização Workbook')}><Input type="date" value={form.workbookDate} onChange={set("workbookDate")} /></Field>
-            <Field label={t('Técnico Workbook')}><Input placeholder={t('Nome do técnico...')} value={form.workbookTech} onChange={set("workbookTech")} /></Field>
+            <Field label={t('Técnico Workbook')}><CreatableInput placeholder={t('Nome do técnico...')} value={form.workbookTech} onChange={setVal("workbookTech")} options={techOptions} onCreate={(v) => onCreateOption && onCreateOption('tech', v)} onRemove={(v) => onRemoveOption && onRemoveOption('tech', v)} /></Field>
           </div>
         </div>
 
@@ -7607,7 +7752,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
               </select>
             </Field>
             <Field label={t('Data Atualização Invoice')}><Input type="date" value={form.invoiceDate} onChange={set("invoiceDate")} /></Field>
-            <Field label={t('Técnico Invoice')}><Input placeholder={t('Nome do técnico...')} value={form.invoiceTech} onChange={set("invoiceTech")} /></Field>
+            <Field label={t('Técnico Invoice')}><CreatableInput placeholder={t('Nome do técnico...')} value={form.invoiceTech} onChange={setVal("invoiceTech")} options={techOptions} onCreate={(v) => onCreateOption && onCreateOption('tech', v)} onRemove={(v) => onRemoveOption && onRemoveOption('tech', v)} /></Field>
           </div>
         </div>
 
@@ -7625,7 +7770,7 @@ function ItemModal({ initial, mode = "GENERAL", openWeek, onClose, onSave, produ
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
           <button onClick={onClose} style={{ background: C.panel2, border: `1px solid ${C.border2}`, color: C.textDim, borderRadius: 5, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>{t('Cancelar')}</button>
-          <button onClick={() => onSave(form)} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Salvar Produção')}</button>
+          <button onClick={saveForm} style={{ background: C.accent, color: "#000", border: "none", borderRadius: 5, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t('Salvar Produção')}</button>
         </div>
       </div>
     </div>
