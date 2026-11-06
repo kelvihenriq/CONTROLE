@@ -174,6 +174,30 @@ const EN_DICT = {
   'Mapa:': 'Map:',
   '— selecione —': '— select —',
   'Novo Mapa': 'New Map',
+  'Checklist: Scanner × Dashboard': 'Checklist: Scanner × Dashboard',
+  'Só mapas com pendência': 'Only maps with pending rows',
+  'Todos os mapas do scanner': 'All scanner maps',
+  'Só os que faltam': 'Only missing',
+  'Copiar faltantes': 'Copy missing',
+  'Copiado': 'Copied',
+  'Adicionar selecionados': 'Add selected',
+  'Adicionar todos que faltam': 'Add all missing',
+  'Adicionar ao Dashboard todos os mapas que faltam?': 'Add all missing maps to the Dashboard?',
+  'Compara cada mapa encontrado no Scanner com os mapas cadastrados no Dashboard de Controle (todos os ciclos). Mapas marcados em vermelho existem no Drive mas ainda não estão no Dashboard.': 'Compares every map found by the Scanner with the maps registered in the Control Dashboard (all cycles). Maps in red exist in Drive but are not in the Dashboard yet.',
+  'Mapas no checklist': 'Maps in checklist',
+  'Já no Dashboard': 'Already in Dashboard',
+  'Faltam no Dashboard': 'Missing in Dashboard',
+  'Todos os mapas do scanner já estão no Dashboard.': 'All scanner maps are already in the Dashboard.',
+  'Mapa (Scanner)': 'Map (Scanner)',
+  'Pendências': 'Pending',
+  'No Dashboard?': 'In Dashboard?',
+  'Cadastrado como': 'Registered as',
+  'linha(s)': 'row(s)',
+  'SIM': 'YES',
+  'FALTA ADICIONAR': 'NEEDS ADDING',
+  'Nenhum mapa para conferir com o filtro atual.': 'No maps to check with the current filter.',
+  'Falta no Dashboard': 'Missing in Dashboard',
+  'No Dashboard': 'In Dashboard',
   'Exportar Pendings (.XLSX)': 'Export Pendings (.XLSX)',
   'Apagar Mapa': 'Delete Map',
   'Selecione um mapa acima ou crie um novo pra começar a marcar os pendings.': 'Select a map above or create a new one to start marking pendings.',
@@ -2768,6 +2792,23 @@ function findDriveResultForMap(mapCode, driveResults) {
   return found || null;
 }
 
+
+// Acha, na lista de mapas do Dashboard (Controle Geral), o mapa que corresponde a um mapa do Scanner.
+// Mesma lógica de normalização do resto do app (só letras/números). Tenta igualdade exata e depois
+// "contém" nas duas direções (exige >= 4 caracteres pra não casar código curto com qualquer coisa).
+function findDashboardProjectForScan(scanMapName, projects) {
+  const key = normMapKey(scanMapName);
+  if (!key || !projects || !projects.length) return null;
+  let found = projects.find((p) => normMapKey(p.map) === key);
+  if (found) return found;
+  found = projects.find((p) => {
+    const pk = normMapKey(p.map);
+    if (!pk || pk.length < 4 || key.length < 4) return false;
+    return pk.includes(key) || key.includes(pk);
+  });
+  return found || null;
+}
+
 function StatChip({ label, value, color }) {
   return (
     <div style={{ background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "8px 14px", display: "flex", flexDirection: "column", gap: 2, minWidth: 120 }}>
@@ -3190,7 +3231,7 @@ function WhatsAppTab({ productionList }) {
   );
 }
 
-function DriveScanTab() {
+function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
   const { t, lang } = useLang();
   const [config, setConfig] = useState(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '', folderIdFilter: '' }; }
@@ -3209,6 +3250,12 @@ function DriveScanTab() {
   const [lastScan, setLastScan] = useState(() => localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_LAST) || '');
   const [error, setError] = useState('');
   const [expandedMap, setExpandedMap] = useState(null);
+
+  // ===== CHECKLIST SCANNER x DASHBOARD =====
+  const [checkScope, setCheckScope] = useState('pending'); // 'pending' = só mapas com pendência | 'all' = todos do scanner
+  const [checkOnlyMissing, setCheckOnlyMissing] = useState(false);
+  const [checkSelected, setCheckSelected] = useState({}); // { fileId: true }
+  const [checkCopied, setCheckCopied] = useState(false);
   const [gisReady, setGisReady] = useState(false);
   const tokenClientRef = React.useRef(null);
 
@@ -3664,6 +3711,33 @@ function DriveScanTab() {
   const mapsUpToDate = results.filter((r) => r.pendingCount === 0).length;
   const mapsWithError = results.filter((r) => r.error).length;
 
+  // Cruza cada mapa do Scanner com a lista de mapas cadastrados no Dashboard (todos os ciclos).
+  const checklist = results
+    .filter((r) => !r.error && normMapKey(r.mapName))
+    .filter((r) => checkScope === 'all' || (r.pendingCount || 0) > 0)
+    .map((r) => ({ r, match: findDashboardProjectForScan(r.mapName, dashboardProjects) }));
+  const checklistMissing = checklist.filter((x) => !x.match);
+  const checklistFound = checklist.length - checklistMissing.length;
+  const checklistVisible = checkOnlyMissing ? checklistMissing : checklist;
+  const selectedMissing = checklistMissing.filter((x) => checkSelected[x.r.fileId]);
+  const dashMatchByFile = new Map(results.map((r) => [r.fileId, findDashboardProjectForScan(r.mapName, dashboardProjects)]));
+  const addMissing = (items) => {
+    if (!onAddMaps || !items.length) return;
+    const names = [];
+    const seen = new Set();
+    items.forEach((x) => { const k = normMapKey(x.r.mapName); if (k && !seen.has(k)) { seen.add(k); names.push(String(x.r.mapName).trim()); } });
+    onAddMaps(names);
+    setCheckSelected({});
+  };
+  const copyMissing = async () => {
+    const text = checklistMissing.map((x) => x.r.mapName).join('\n');
+    try { await navigator.clipboard.writeText(text); } catch (e) {
+      const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e2) {} document.body.removeChild(ta);
+    }
+    setCheckCopied(true); setTimeout(() => setCheckCopied(false), 1800);
+  };
+
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
       <Panel title={t('Conexão com o Google Drive')} icon={<CloudIcon size={13} color={C.textDim} />}>
@@ -3803,7 +3877,12 @@ function DriveScanTab() {
                 {results.map((r) => (
                   <React.Fragment key={r.fileId}>
                     <tr style={{ borderTop: `1px solid ${C.border2}`, background: r.error ? "rgba(74,96,112,0.08)" : (r.pendingCount > 0 ? C.redSoft : "transparent") }}>
-                      <td style={tdStyleDrive}><strong>{r.mapName}</strong></td>
+                      <td style={tdStyleDrive}>
+                        <strong>{r.mapName}</strong>
+                        {!r.error && normMapKey(r.mapName) && (dashMatchByFile.get(r.fileId)
+                          ? <div style={{ fontSize: 8.5, fontWeight: 700, color: C.green, marginTop: 3 }}>✓ {t('No Dashboard')}</div>
+                          : <div style={{ fontSize: 8.5, fontWeight: 700, color: C.red, marginTop: 3 }}>✗ {t('Falta no Dashboard')}</div>)}
+                      </td>
                       <td style={{ ...tdStyleDrive, color: C.textFaint }}>
                         <a href={r.webViewLink} target="_blank" rel="noreferrer" style={{ color: C.textDim }}>{r.fileName}</a>
                         {r.sheetName && r.sheetCount > 1 && (
@@ -3873,6 +3952,96 @@ function DriveScanTab() {
           </div>
         )}
       </Panel>
+
+
+      {results.length > 0 && (
+        <Panel
+          title={t('Checklist: Scanner × Dashboard')}
+          icon={<Search size={13} color={C.textDim} />}
+          right={
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <select value={checkScope} onChange={(e) => setCheckScope(e.target.value)} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "6px 8px", fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace" }}>
+                <option value="pending">{t('Só mapas com pendência')}</option>
+                <option value="all">{t('Todos os mapas do scanner')}</option>
+              </select>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: C.textDim, cursor: "pointer" }}>
+                <input type="checkbox" checked={checkOnlyMissing} onChange={(e) => setCheckOnlyMissing(e.target.checked)} />
+                {t('Só os que faltam')}
+              </label>
+              <button onClick={copyMissing} disabled={!checklistMissing.length} style={{ background: "transparent", color: checklistMissing.length ? C.accent : C.textFaint, border: `1px solid ${checklistMissing.length ? C.accent : C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: checklistMissing.length ? "pointer" : "default" }}>
+                {checkCopied ? `✓ ${t('Copiado')}` : t('Copiar faltantes')}
+              </button>
+              {onAddMaps && (
+                <>
+                  <button onClick={() => addMissing(selectedMissing)} disabled={!selectedMissing.length} style={{ background: "transparent", color: selectedMissing.length ? C.green : C.textFaint, border: `1px solid ${selectedMissing.length ? C.green : C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: selectedMissing.length ? "pointer" : "default" }}>
+                    {t('Adicionar selecionados')} ({selectedMissing.length})
+                  </button>
+                  <button onClick={() => { if (window.confirm(`${t('Adicionar ao Dashboard todos os mapas que faltam?')} (${checklistMissing.length})`)) addMissing(checklistMissing); }} disabled={!checklistMissing.length} style={{ background: checklistMissing.length ? C.green : C.textFaint, color: "#000", border: "none", borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: checklistMissing.length ? "pointer" : "default" }}>
+                    {t('Adicionar todos que faltam')}
+                  </button>
+                </>
+              )}
+            </div>
+          }
+        >
+          <div style={{ fontSize: 10, color: C.textFaint, lineHeight: 1.6 }}>
+            {t('Compara cada mapa encontrado no Scanner com os mapas cadastrados no Dashboard de Controle (todos os ciclos). Mapas marcados em vermelho existem no Drive mas ainda não estão no Dashboard.')}
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <StatChip label={t('Mapas no checklist')} value={checklist.length} color={C.text} />
+            <StatChip label={t('Já no Dashboard')} value={checklistFound} color={C.green} />
+            <StatChip label={t('Faltam no Dashboard')} value={checklistMissing.length} color={checklistMissing.length ? C.red : C.green} />
+          </div>
+          {checklistMissing.length === 0 && checklist.length > 0 && (
+            <div style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>✓ {t('Todos os mapas do scanner já estão no Dashboard.')}</div>
+          )}
+          {checklistVisible.length > 0 && (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...thStyleDrive, width: 28 }}>
+                      {onAddMaps && checklistMissing.length > 0 && (
+                        <input type="checkbox"
+                          checked={selectedMissing.length === checklistMissing.length && checklistMissing.length > 0}
+                          onChange={(e) => { const next = {}; if (e.target.checked) checklistMissing.forEach((x) => { next[x.r.fileId] = true; }); setCheckSelected(next); }} />
+                      )}
+                    </th>
+                    <th style={thStyleDrive}>{t('Mapa (Scanner)')}</th>
+                    <th style={thStyleDrive}>{t('Pendências')}</th>
+                    <th style={thStyleDrive}>{t('No Dashboard?')}</th>
+                    <th style={thStyleDrive}>{t('Cadastrado como')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {checklistVisible.map(({ r, match }) => (
+                    <tr key={r.fileId} style={{ borderTop: `1px solid ${C.border2}`, background: match ? "transparent" : C.redSoft }}>
+                      <td style={tdStyleDrive}>
+                        {!match && onAddMaps && (
+                          <input type="checkbox" checked={!!checkSelected[r.fileId]} onChange={(e) => setCheckSelected((s) => ({ ...s, [r.fileId]: e.target.checked }))} />
+                        )}
+                      </td>
+                      <td style={tdStyleDrive}><strong>{r.mapName}</strong></td>
+                      <td style={{ ...tdStyleDrive, color: (r.pendingCount || 0) > 0 ? C.amber : C.green, fontWeight: 700 }}>
+                        {(r.pendingCount || 0) > 0 ? `${r.pendingCount} ${t('linha(s)')}` : t('EM DIA')}
+                      </td>
+                      <td style={{ ...tdStyleDrive, fontWeight: 800, color: match ? C.green : C.red }}>
+                        {match ? `✓ ${t('SIM')}` : `✗ ${t('FALTA ADICIONAR')}`}
+                      </td>
+                      <td style={{ ...tdStyleDrive, color: C.textDim }}>
+                        {match ? `${match.map}${match.cycle ? ` · ${match.cycle.replace('SEMANA_', 'S')}` : ''}${match.deliveryDay ? ` · ${match.deliveryDay}` : ''}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {checklist.length === 0 && (
+            <div style={{ fontSize: 10.5, color: C.textFaint, padding: "12px 0", textAlign: "center" }}>{t('Nenhum mapa para conferir com o filtro atual.')}</div>
+          )}
+        </Panel>
+      )}
 
       <Panel title={t('Como configurar o acesso ao Google Drive (uma vez só)')} icon={<Link2 size={13} color={C.amber} />}>
         <ol style={{ fontSize: 10, color: C.textDim, lineHeight: 2, paddingLeft: 18, margin: 0 }}>
@@ -4402,6 +4571,35 @@ function ProductionDashboard() {
     }
   }, [projects]);
   useCloudSync('projects', [projects], () => projects, (v) => setProjects(migrateProjectsList(v)));
+
+  // Cria no Dashboard (Controle Geral) os mapas que o Scanner Drive achou e ainda não existem aqui.
+  // Entram zerados (sem OTs, sem status), no ciclo atualmente selecionado, igual ao "Novo Mapa" do Controle Geral.
+  const addMapsFromScanner = (names) => {
+    const base = Date.now();
+    const cycle = (selectedCycle && selectedCycle !== "ALL") ? selectedCycle : "SEMANA_1";
+    setProjects((prev) => {
+      const existing = new Set(prev.map((p) => normMapKey(p.map)));
+      const toAdd = [];
+      (names || []).forEach((n, i) => {
+        const k = normMapKey(n);
+        if (!k || existing.has(k)) return;
+        existing.add(k);
+        toAdd.push({
+          id: `item-${base}-${i}`,
+          deliveryDay: "QUINTA",
+          cycle,
+          map: String(n).trim(),
+          status: "NO_UPDATE",
+          otCount: 0,
+          asbuiltStatus: "SEM_ATUALIZACAO_SEMANA", asbuiltDate: "", asbuiltTech: "", asbuiltHistory: [],
+          invoiceStatus: "PENDENTE", invoiceDate: "", invoiceTech: "", invoiceHistory: [],
+          workbookStatus: "PENDENTE", workbookDate: "", workbookTech: "", workbookHistory: [],
+          note: "Adicionado pelo Checklist do Scanner Drive"
+        });
+      });
+      return toAdd.length ? [...prev, ...toAdd] : prev;
+    });
+  };
 
   const filteredAndSorted = useMemo(() => {
     return projects.filter((p) => {
@@ -5813,7 +6011,7 @@ function ProductionDashboard() {
 
       {activeTab === "PENDINGS" && <PendingsTab pendingsByMap={pendingsByMap} setPendingsByMap={setPendingsByMap} suggestedMaps={availableMaps} />}
       {activeTab === "REDLINES" && <RedlinesTab redlinesData={redlinesData} setRedlinesData={setRedlinesData} />}
-      {activeTab === "DRIVE_SCAN" && <DriveScanTab />}
+      {activeTab === "DRIVE_SCAN" && <DriveScanTab dashboardProjects={projects} onAddMaps={addMapsFromScanner} />}
       {activeTab === "WHATSAPP" && <WhatsAppTab productionList={productionList} />}
 
       {activeTab === "PRODUCTION_LIST" && (
