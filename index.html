@@ -174,6 +174,8 @@ const EN_DICT = {
   'Mapa:': 'Map:',
   '— selecione —': '— select —',
   'Novo Mapa': 'New Map',
+  'Semana:': 'Week:',
+  'Ativa:': 'Active:',
   'Checklist: Scanner × Dashboard': 'Checklist: Scanner × Dashboard',
   'Só mapas com pendência': 'Only maps with pending rows',
   'Todos os mapas do scanner': 'All scanner maps',
@@ -4487,7 +4489,9 @@ function ProductionDashboard() {
   };
 
   const [search, setSearch] = useState("");
-  const [selectedCycle, setSelectedCycle] = useState("SEMANA_1");
+  const [selectedCycle, setSelectedCycle] = useState(openWeek);
+  // Mantém a visualização na semana ativa quando ela muda (ex: veio da nuvem); "Todos os Ciclos" não é alterado.
+  useEffect(() => { setSelectedCycle((c) => (c === "ALL" ? c : openWeek)); }, [openWeek]);
   const [selectedDeliveryDay, setSelectedDeliveryDay] = useState("ALL");
   const [showModal, setShowModal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
@@ -5980,22 +5984,23 @@ function ProductionDashboard() {
             <>
               <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "4px 8px" }}>
                 <Calendar size={13} color={C.amber} />
-                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Ciclo:')}</span>
-                <select value={selectedCycle} onChange={(e) => setSelectedCycle(e.target.value)} style={{ background: "transparent", color: C.text, border: "none", fontSize: 11, outline: "none", fontWeight: 700, cursor: "pointer" }}>
-                  {WEEK_OPTIONS.map((w) => (
-                    <option key={w.id} value={w.id} style={{ background: C.panel }}>{formatWeekLabel(w, weekDateRanges)} {w.id === openWeek ? t("(Aberta)") : t("(Fechada)")}</option>
-                  ))}
-                  <option value="ALL" style={{ background: C.panel }}>{t('Todos os Ciclos')}</option>
-                </select>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(0, 230, 118, 0.08)", border: `1px solid ${C.green}`, borderRadius: 5, padding: "4px 8px" }}>
-                <span style={{ fontSize: 10, color: C.green, fontWeight: 700, textTransform: "uppercase" }}>{t('Semana Aberta (Ativa):')}</span>
-                <select value={openWeek} onChange={(e) => setOpenWeek(e.target.value)} style={{ background: "transparent", color: C.green, border: "none", fontSize: 11, outline: "none", fontWeight: 800, cursor: "pointer" }}>
+                <span style={{ fontSize: 10, color: C.textDim, fontWeight: 700, textTransform: "uppercase" }}>{t('Semana:')}</span>
+                {/* Seletor único: escolher uma semana muda o que está sendo visto E define ela como a semana ativa (de lançamentos). "Todos os Ciclos" só muda a visualização. */}
+                <select
+                  value={selectedCycle}
+                  onChange={(e) => { const v = e.target.value; setSelectedCycle(v); if (v !== "ALL") setOpenWeek(v); }}
+                  style={{ background: "transparent", color: selectedCycle === "ALL" ? C.text : C.green, border: "none", fontSize: 11, outline: "none", fontWeight: 800, cursor: "pointer" }}
+                >
                   {WEEK_OPTIONS.map((w) => (
                     <option key={w.id} value={w.id} style={{ background: C.panel, color: C.text }}>{formatWeekLabel(w, weekDateRanges)}</option>
                   ))}
+                  <option value="ALL" style={{ background: C.panel, color: C.text }}>{t('Todos os Ciclos')}</option>
                 </select>
+                {selectedCycle === "ALL" && (
+                  <span style={{ fontSize: 9.5, color: C.green, fontWeight: 700, borderLeft: `1px solid ${C.border2}`, paddingLeft: 6 }}>
+                    {t('Ativa:')} {formatWeekLabel(WEEK_OPTIONS.find((w) => w.id === openWeek) || WEEK_OPTIONS[0], weekDateRanges)}
+                  </span>
+                )}
               </div>
 
               <button onClick={() => setShowWeekDatesModal(true)} title="Definir as datas (De/Até) de cada semana, ex: Semana 1 = 01/08 a 07/08" style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 5, padding: "8px 12px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
