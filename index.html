@@ -174,6 +174,8 @@ const EN_DICT = {
   'Mapa:': 'Map:',
   '— selecione —': '— select —',
   'Novo Mapa': 'New Map',
+  'linha(s) fora do ciclo': 'row(s) outside the cycle',
+  'Esta planilha não tem END INVOICE/INVOICED e essas linhas têm LOCATION preenchido, mas a data delas está fora do ciclo de faturamento configurado (ou vazia/inválida). Confira se a data está certa.': 'This sheet has no END INVOICE/INVOICED and these rows have a LOCATION, but their date is outside the configured billing cycle (or empty/invalid). Check the date.',
   'Semana:': 'Week:',
   'Ativa:': 'Active:',
   'Checklist: Scanner × Dashboard': 'Checklist: Scanner × Dashboard',
@@ -2703,6 +2705,27 @@ function isInvoiceMarkerCell(cell) {
   return /^(END[\s\-_]*INVOICE|INVOICED)[\s\-–:.!\d\/]*$/.test(v);
 }
 
+// Datas da planilha: cada arquivo pode estar formatado em dd/mm/aa (ex: 03/11/26 = 3 de novembro) ou
+// mm/dd/aa (11/05/26 = 5 de novembro). O leitor usa o TEXTO formatado da célula, e o resto do sistema
+// sempre interpreta como mm/dd/aa — então um arquivo em dd/mm/aa era lido como outra data (03/11/26
+// virava 11 de MARÇO) e as linhas caíam fora do ciclo, deixando o mapa como "EM DIA" por engano.
+// Aqui reescrevemos o texto de toda célula que é DATA de verdade (pelo valor numérico + formato da
+// célula, não pelo que aparece na tela) sempre em mm/dd/aa, antes de converter a aba em linhas.
+function normalizeSheetDatesToUS(XLSXlib, ws) {
+  if (!ws || !XLSXlib || !XLSXlib.SSF || !XLSXlib.SSF.is_date || !XLSXlib.SSF.parse_date_code) return;
+  Object.keys(ws).forEach((addr) => {
+    if (addr[0] === '!') return;
+    const c = ws[addr];
+    if (!c || c.t !== 'n' || typeof c.v !== 'number' || c.v < 1 || !c.z) return; // só número com formato (z) de data
+    let isDate = false;
+    try { isDate = XLSXlib.SSF.is_date(c.z); } catch (e) { isDate = false; }
+    if (!isDate) return;
+    const p = XLSXlib.SSF.parse_date_code(c.v);
+    if (!p || !p.y || !p.m || !p.d) return;
+    c.w = String(p.m).padStart(2, '0') + '/' + String(p.d).padStart(2, '0') + '/' + String(p.y % 100).padStart(2, '0');
+  });
+}
+
 // fallbackStartDate ('YYYY-MM-DD' ou null): usado SÓ quando a aba não tem nenhum "END INVOICE"
 // marcado — nesse caso, em vez de considerar a aba inteira pendente (ou zerada), conta como
 // pendente qualquer linha com data dentro do ciclo de faturamento atual (>= data informada).
@@ -2763,7 +2786,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       break;
     }
   }
-  if (headerIdx === -1 || colLocation === -1) return { pending: [], total: 0, usedDateFallback: false, lastDate: 0 };
+  if (headerIdx === -1 || colLocation === -1) return { pending: [], total: 0, usedDateFallback: false, lastDate: 0, skippedByDate: 0, skippedSample: [] };
 
   const dataRows = [];
   let lastInvoiceRelIdx = -1;
@@ -2815,19 +2838,24 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
 
   let pending;
   let usedDateFallback = false;
+  let skippedRows = [];
 
   if (lastInvoiceRelIdx === -1 && fallbackStartDate) {
     // Não achou nenhum "END INVOICE" nessa aba — usa a data de início (e, se informado, a data
     // de fim) do ciclo de faturamento como janela.
     const cutoff = new Date(fallbackStartDate + 'T00:00:00');
     const cutoffEnd = fallbackEndDate ? new Date(fallbackEndDate + 'T23:59:59') : null;
-    pending = dataRows.filter((r) => {
+    // Exige LOCATION preenchido pra contar como pendência de verdade — uma linha com só a
+    // data preenchida (por engano, ou um resto de linha em branco na planilha) não é um
+    // serviço real e não deve virar uma "linha fantasma" vazia na Produção.
+    const inWindow = (r) => {
       const d = parseUSShortDate(r.date);
-      // Exige LOCATION preenchido pra contar como pendência de verdade — uma linha com só a
-      // data preenchida (por engano, ou um resto de linha em branco na planilha) não é um
-      // serviço real e não deve virar uma "linha fantasma" vazia na Produção.
       return d && d >= cutoff && (!cutoffEnd || d <= cutoffEnd) && r.location;
-    });
+    };
+    pending = dataRows.filter(inWindow);
+    // Linhas com trabalho (LOCATION preenchido) que ficaram de fora só por causa da data — o Scanner
+    // avisa, em vez de mostrar "EM DIA" em silêncio (ex: data fora do ciclo, vazia ou em formato estranho).
+    skippedRows = dataRows.filter((r) => r.location && !inWindow(r));
     usedDateFallback = true;
   } else if (lastInvoiceRelIdx === -1) {
     // Não achou "END INVOICE" NEM tem um ciclo de faturamento configurado como fallback.
@@ -2841,7 +2869,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
     pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.location);
   }
 
-  return { pending, total: dataRows.length, usedDateFallback, lastDate };
+  return { pending, total: dataRows.length, usedDateFallback, lastDate, skippedByDate: skippedRows.length, skippedSample: skippedRows.slice(0, 3).map((r) => r.date || '(sem data)') };
 }
 
 // Normaliza um nome de mapa/código pra comparação: maiúsculo, só letras e números.
@@ -3601,11 +3629,13 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
             : `https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`;
           const resp = await driveFetch(dlUrl);
           const buf = await resp.arrayBuffer();
-          const wb = window.XLSX.read(buf, { type: 'array' });
+          const wb = window.XLSX.read(buf, { type: 'array', cellNF: true });
 
           let mapPending = [];
           let mapTotal = 0;
           let mapUsedDateFallback = false;
+          let mapSkippedByDate = 0;
+          let mapSkippedSample = [];
           // Só a aba principal de produção conta — evita somar rascunhos, cópias
           // e abas de invoices antigos que também moram dentro do mesmo arquivo.
           const isDraftSheetName = (name) => /rascunho|c[oó]pia|draft|invoice\s*\d|hist[oó]rico|antig/i.test(name);
@@ -3618,6 +3648,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
           let mainSheetName = null;
           let parsed = null;
           namesToTry.forEach((name) => {
+            normalizeSheetDatesToUS(window.XLSX, wb.Sheets[name]);
             const rowsTry = window.XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
             const p = parseProductionSheetRows(rowsTry, config.cycleStartDate || null, config.cycleEndDate || null);
             if (!parsed || (p.total > 0 && (parsed.total === 0 || p.lastDate > parsed.lastDate))) { parsed = p; mainSheetName = name; }
@@ -3629,6 +3660,8 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
             }
             mapTotal = parsed.total;
             mapUsedDateFallback = parsed.usedDateFallback;
+            mapSkippedByDate = parsed.skippedByDate || 0;
+            mapSkippedSample = parsed.skippedSample || [];
           }
 
           // Nome do mapa "limpo": tira extensão (.xlsx), "PRODUCTION LIST" e "PRODUCTION OLD",
@@ -3650,6 +3683,8 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
             pendingRows: mapPending,
             totalRows: mapTotal,
             usedDateFallback: mapUsedDateFallback,
+            skippedByDate: mapSkippedByDate,
+            skippedSample: mapSkippedSample,
             sheetName: mainSheetName || '',
             sheetCount: wb.SheetNames.length,
             error: null,
@@ -3975,6 +4010,11 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
                       </td>
                       <td style={{ ...tdStyleDrive, fontWeight: 800, color: r.error ? C.textFaint : (r.pendingCount > 0 ? C.red : C.green) }}>
                         {r.error ? `${t('ERRO:')} ${r.error.slice(0, 220)}` : (r.pendingCount === 0 ? t('EM DIA') : `${r.pendingCount} ${t('linha(s) pendente(s)')}`)}
+                        {!r.error && r.pendingCount === 0 && (r.skippedByDate || 0) > 0 && (
+                          <div title={t('Esta planilha não tem END INVOICE/INVOICED e essas linhas têm LOCATION preenchido, mas a data delas está fora do ciclo de faturamento configurado (ou vazia/inválida). Confira se a data está certa.')} style={{ fontSize: 9, fontWeight: 700, color: C.amber, marginTop: 3 }}>
+                            ⚠ {r.skippedByDate} {t('linha(s) fora do ciclo')} ({(r.skippedSample || []).join(', ')})
+                          </div>
+                        )}
                         {r.usedDateFallback && r.pendingCount > 0 && (
                           <span title="Essa planilha não tem nenhum 'END INVOICE' nem 'INVOICED' marcado — a contagem usou a data de início do ciclo de faturamento como critério." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
                             {t('por data')}
