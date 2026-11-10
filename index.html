@@ -156,7 +156,7 @@ const EN_DICT = {
   'Erro na leitura': 'Read error',
   'EM DIA': 'ON TRACK',
   'linha(s) pendente(s)': 'pending row(s)',
-  'POR DATA': 'BY DATE',
+  'SEM END INVOICE': 'NO END INVOICE',
   '(Zerado)': '(Zeroed)',
   'OT(s)': 'WO(s)',
   'Nenhum item encontrado': 'No items found',
@@ -293,7 +293,7 @@ const EN_DICT = {
   'Modificado': 'Modified',
   'Situação': 'Status',
   'ERRO:': 'ERROR:',
-  'por data': 'by date',
+  'sem END INVOICE': 'no END INVOICE',
   'Ocultar': 'Hide',
   'Ver linhas': 'View rows',
   'Data': 'Date',
@@ -2840,31 +2840,14 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
   let usedDateFallback = false;
   let skippedRows = [];
 
-  if (lastInvoiceRelIdx === -1 && fallbackStartDate) {
-    // Não achou nenhum "END INVOICE" nessa aba — usa a data de início (e, se informado, a data
-    // de fim) do ciclo de faturamento como janela.
-    const cutoff = new Date(fallbackStartDate + 'T00:00:00');
-    const cutoffEnd = fallbackEndDate ? new Date(fallbackEndDate + 'T23:59:59') : null;
-    // Exige LOCATION preenchido pra contar como pendência de verdade — uma linha com só a
-    // data preenchida (por engano, ou um resto de linha em branco na planilha) não é um
-    // serviço real e não deve virar uma "linha fantasma" vazia na Produção.
-    const inWindow = (r) => {
-      const d = parseUSShortDate(r.date);
-      return d && d >= cutoff && (!cutoffEnd || d <= cutoffEnd) && r.location;
-    };
-    pending = dataRows.filter(inWindow);
-    // Linhas com trabalho (LOCATION preenchido) que ficaram de fora só por causa da data — o Scanner
-    // avisa, em vez de mostrar "EM DIA" em silêncio (ex: data fora do ciclo, vazia ou em formato estranho).
-    skippedRows = dataRows.filter((r) => r.location && !inWindow(r));
-    usedDateFallback = true;
-  } else if (lastInvoiceRelIdx === -1) {
-    // Não achou "END INVOICE" NEM tem um ciclo de faturamento configurado como fallback.
-    // IMPORTANTE: dataRows.slice(-1) com índice -1 não significa "tudo" — significa "só a
-    // ÚLTIMA linha"! Isso fazia a aba inteira (menos uma linha) sumir da contagem de pendências,
-    // às vezes zerando ela por completo e mostrando "EM DIA" numa planilha cheia de trabalho
-    // pendente de verdade. Sem nenhum marcador de corte, o certo é considerar a aba INTEIRA
-    // como pendente (ninguém fechou nada ainda).
+  if (lastInvoiceRelIdx === -1) {
+    // Sem nenhum "END INVOICE"/"INVOICED" na aba: TODA linha com LOCATION preenchido é pendente,
+    // independente da data (a data pode estar em dd/mm ou mm/dd, digitada errada, etc.). A linha só
+    // deixa de ser pendente quando alguém colocar o "END INVOICE" abaixo dela. (As datas do ciclo
+    // de faturamento não são mais usadas aqui.) A flag usedDateFallback segue com esse nome só por
+    // compatibilidade — agora significa "mapa sem END INVOICE".
     pending = dataRows.filter((r) => r.location);
+    usedDateFallback = true;
   } else {
     pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.location);
   }
@@ -3750,7 +3733,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
       let situacao;
       if (r.error) situacao = `ERRO: ${r.error}`;
       else if ((r.pendingCount || 0) === 0) situacao = "EM DIA";
-      else situacao = `${r.pendingCount} linha(s) pendente(s)${r.usedDateFallback ? ' (por data)' : ''}`;
+      else situacao = `${r.pendingCount} linha(s) pendente(s)${r.usedDateFallback ? ' (sem END INVOICE)' : ''}`;
       return { map: r.mapName, file: r.fileName, mod: modStr, situacao, link: r.webViewLink || '', pendingCount: r.pendingCount, error: r.error, usedDateFallback: r.usedDateFallback };
     });
 
@@ -3791,7 +3774,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
       const sCell = ws.getRow(r).getCell(situacaoCol);
       if (d.situacao === "EM DIA") { sCell.fill = greenFill; sCell.font = greenFont; }
       else if (d.situacao === "ERRO") { sCell.fill = grayFill; sCell.font = grayFont; }
-      else if (d.situacao === "PENDENTE (POR DATA)") { sCell.fill = amberFill; sCell.font = amberFont; }
+      else if (/\(sem END INVOICE\)/i.test(String(d.situacao))) { sCell.fill = amberFill; sCell.font = amberFont; }
       else { sCell.fill = redFill; sCell.font = redFont; }
     }
 
@@ -4016,8 +3999,8 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
                           </div>
                         )}
                         {r.usedDateFallback && r.pendingCount > 0 && (
-                          <span title="Essa planilha não tem nenhum 'END INVOICE' nem 'INVOICED' marcado — a contagem usou a data de início do ciclo de faturamento como critério." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
-                            {t('por data')}
+                          <span title="Essa planilha não tem nenhum 'END INVOICE' nem 'INVOICED' marcado — todas as linhas com LOCATION preenchido contam como pendentes (sem olhar a data) até alguém colocar o END INVOICE." style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
+                            {t('sem END INVOICE')}
                           </span>
                         )}
                       </td>
@@ -5754,7 +5737,7 @@ function ProductionDashboard() {
       if (!dr) return '—';
       if (dr.error) return 'Erro na leitura';
       if ((dr.pendingCount || 0) === 0) return 'EM DIA';
-      return `${dr.pendingCount} linha(s) pendente(s)${dr.usedDateFallback ? ' (POR DATA)' : ''}`;
+      return `${dr.pendingCount} linha(s) pendente(s)${dr.usedDateFallback ? ' (SEM END INVOICE)' : ''}`;
     };
     const driveModifiedLabel = (dr) => (dr && dr.modifiedTime) ? new Date(dr.modifiedTime).toLocaleString('pt-BR') : '—';
 
@@ -6868,7 +6851,7 @@ function ProductionDashboard() {
                             </span>
                           )}
                           {dr.usedDateFallback && (
-                            <span style={{ fontSize: 8.5, fontWeight: 800, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 4px" }}>{t('POR DATA')}</span>
+                            <span style={{ fontSize: 8.5, fontWeight: 800, color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: "1px 4px" }}>{t('SEM END INVOICE')}</span>
                           )}
                         </span>
                       )}
