@@ -185,6 +185,7 @@ const EN_DICT = {
   'Copiar faltantes': 'Copy missing',
   'Copiado': 'Copied',
   'Adicionar selecionados': 'Add selected',
+  'Dia de entrega': 'Delivery day',
   'Adicionar todos que faltam': 'Add all missing',
   'Adicionar ao Dashboard todos os mapas que faltam?': 'Add all missing maps to the Dashboard?',
   'Compara cada mapa encontrado no Scanner com os mapas cadastrados no Dashboard de Controle (todos os ciclos). Mapas marcados em vermelho existem no Drive mas ainda não estão no Dashboard.': 'Compares every map found by the Scanner with the maps registered in the Control Dashboard (all cycles). Maps in red exist in Drive but are not in the Dashboard yet.',
@@ -682,7 +683,7 @@ const STORAGE_KEY_WEEK_RANGES = 'CONTROL_PRO_WEEK_DATE_RANGES_V1';
 function formatWeekLabel(week, weekDateRanges) {
   const range = weekDateRanges && weekDateRanges[week.id];
   if (range && range.from && range.to) {
-    const fmt = (d) => { const parts = (d || "").split("-"); return parts.length === 3 ? `${parts[2]}/${parts[1]}` : d; };
+    const fmt = (d) => { const parts = (d || "").split("-"); return parts.length === 3 ? `${parts[1]}/${parts[2]}` : d; };
     return `${week.label} (${fmt(range.from)} - ${fmt(range.to)})`;
   }
   return week.label;
@@ -921,7 +922,7 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
       dateCell.value = new Date(`${iso}T12:00:00Z`);
       dateCell.numFmt = 'mm/dd/yy'; // mesmo texto que aparece no site (ex: 10/06/26)
     } else {
-      dateCell.value = item.date || '';
+      dateCell.value = fmtUSDate(item.date) || '';
     }
     row.getCell(2).value = item.map || '';
     row.getCell(3).value = item.location || '';
@@ -1409,7 +1410,18 @@ function formatShortDate(dateStr) {
     if (!dateStr) return '';
     const parts = dateStr.split('-');
     if (parts.length !== 3) return dateStr;
-    return `${parts[2]}/${parts[1]}`;
+    return `${parts[1]}/${parts[2]}`; // padrão americano MM/DD
+}
+
+// Padrão americano: qualquer data (YYYY-MM-DD ou M/D/YY) sai como MM/DD/YY (ex: 11/04/26).
+function fmtUSDate(s) {
+  s = String(s == null ? '' : s).trim();
+  if (!s) return '';
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[2]}/${m[3]}/${m[1].slice(2)}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) return `${m[1].padStart(2, '0')}/${m[2].padStart(2, '0')}/${m[3].length === 4 ? m[3].slice(2) : m[3]}`;
+  return s;
 }
 
 // Entradas de histórico podem vir no formato antigo (string 'YYYY-MM-DD')
@@ -2716,6 +2728,10 @@ function normalizeSheetDatesToUS(XLSXlib, ws) {
   Object.keys(ws).forEach((addr) => {
     if (addr[0] === '!') return;
     const c = ws[addr];
+    if (c && c.t === 'd' && c.v instanceof Date && !isNaN(c.v.getTime())) { // célula já lida como Date
+      c.w = String(c.v.getUTCMonth() + 1).padStart(2, '0') + '/' + String(c.v.getUTCDate()).padStart(2, '0') + '/' + String(c.v.getUTCFullYear() % 100).padStart(2, '0');
+      return;
+    }
     if (!c || c.t !== 'n' || typeof c.v !== 'number' || c.v < 1 || !c.z) return; // só número com formato (z) de data
     let isDate = false;
     try { isDate = XLSXlib.SSF.is_date(c.z); } catch (e) { isDate = false; }
@@ -3010,7 +3026,7 @@ function WhatsAppTab({ productionList }) {
   const range = mode === 'WEEK' ? waWeekRange(anchor) : mode === 'RANGE' ? { start: rFrom <= rTo ? rFrom : rTo, end: rFrom <= rTo ? rTo : rFrom } : { start: anchor, end: anchor };
   const days = useMemo(() => waEachDay(range.start, range.end), [range.start, range.end]);
   const shift = (n) => { const d = new Date(`${anchor}T12:00:00`); d.setDate(d.getDate() + n * (mode === 'WEEK' ? 7 : 1)); setAnchor(waIso(d)); };
-  const fmt = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+  const fmt = (iso) => `${iso.slice(5, 7)}/${iso.slice(8, 10)}`;
 
   const monitored = useMemo(() => new Set(config?.monitored || []), [config]);
   const saveMonitored = (ids) => {
@@ -3170,7 +3186,7 @@ function WhatsAppTab({ productionList }) {
   React.useEffect(() => { const i = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(i); }, []);
   const off = !!status && (status.state === 'stopped' || (status.heartbeat && now - status.heartbeat > 120000));
   const st = off ? 'off' : status?.state;
-  const clock = (iso) => iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+  const clock = (iso) => iso ? new Date(iso).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 
   return (
     <div style={{ padding: '14px 4px' }}>
@@ -3297,7 +3313,7 @@ function WhatsAppTab({ productionList }) {
                       <tbody>
                         {r.reports.map((p) => (
                           <tr key={p.id || p.ms} style={{ borderTop: `1px solid ${C.border2}` }}>
-                            <td style={tdStyleDriveSm}>{new Date(p.ms).toLocaleString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+                            <td style={tdStyleDriveSm}>{new Date(p.ms).toLocaleString('en-US', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
                             <td style={tdStyleDriveSm}>{p.sender}</td>
                             <td style={{ ...tdStyleDriveSm, color: C.text }}>{String(p.text).replace(/\s*\n\s*/g, ' / ')}</td>
                             <td style={tdStyleDriveSm}>{repBadge(p)}</td>
@@ -3342,6 +3358,8 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
   const [checkScope, setCheckScope] = useState('pending'); // 'pending' = só mapas com pendência | 'all' = todos do scanner
   const [checkOnlyMissing, setCheckOnlyMissing] = useState(false);
   const [checkSelected, setCheckSelected] = useState({}); // { fileId: true }
+  const [addDay, setAddDay] = useState('QUINTA'); // dia de entrega aplicado aos mapas adicionados ao Dashboard
+  const addDayOptions = Array.from(new Set(['QUINTA', 'SEXTA', ...(dashboardProjects || []).map((p) => String(p.deliveryDay || '').trim().toUpperCase()).filter(Boolean)]));
   const [checkCopied, setCheckCopied] = useState(false);
   const [gisReady, setGisReady] = useState(false);
   const tokenClientRef = React.useRef(null);
@@ -3669,6 +3687,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
             skippedByDate: mapSkippedByDate,
             skippedSample: mapSkippedSample,
             sheetName: mainSheetName || '',
+            dateFmt: 'us', // datas desta varredura já estão em MM/DD/YY
             sheetCount: wb.SheetNames.length,
             error: null,
           });
@@ -3729,7 +3748,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
 
     // Uma linha por mapa (igual à tabela da tela) — sem detalhar as linhas pendentes individuais
     const dataRows = results.map((r) => {
-      const modStr = r.modifiedTime ? new Date(r.modifiedTime).toLocaleString("pt-BR") : "—";
+      const modStr = r.modifiedTime ? new Date(r.modifiedTime).toLocaleString("en-US") : "—";
       let situacao;
       if (r.error) situacao = `ERRO: ${r.error}`;
       else if ((r.pendingCount || 0) === 0) situacao = "EM DIA";
@@ -3820,7 +3839,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
     const names = [];
     const seen = new Set();
     items.forEach((x) => { const k = normMapKey(x.r.mapName); if (k && !seen.has(k)) { seen.add(k); names.push(String(x.r.mapName).trim()); } });
-    onAddMaps(names);
+    onAddMaps(names, addDay);
     setCheckSelected({});
   };
   const copyMissing = async () => {
@@ -3937,7 +3956,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
         )}
 
         {lastScan && (
-          <div style={{ fontSize: 9.5, color: C.textFaint }}>{t('Última varredura: ')}{new Date(lastScan).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR')}</div>
+          <div style={{ fontSize: 9.5, color: C.textFaint }}>{t('Última varredura: ')}{new Date(lastScan).toLocaleString('en-US')}</div>
         )}
 
         {results.length > 0 && (
@@ -3984,7 +4003,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
                         )}
                       </td>
                       <td style={tdStyleDrive}>
-                        {r.modifiedTime ? new Date(r.modifiedTime).toLocaleString('pt-BR') : "—"}
+                        {r.modifiedTime ? new Date(r.modifiedTime).toLocaleString('en-US') : "—"}
                         {r.stale && (
                           <span title={t('Este arquivo não apareceu na última varredura (fora da janela de dias configurada) — os dados abaixo são da última vez que ele foi lido.')} style={{ marginLeft: 6, fontSize: 8.5, fontWeight: 700, color: C.textFaint, border: `1px solid ${C.border2}`, borderRadius: 3, padding: "1px 5px", textTransform: "uppercase" }}>
                             {t('desatualizado')}
@@ -4030,7 +4049,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
                               <tbody>
                                 {r.pendingRows.map((row, idx) => (
                                   <tr key={idx} style={{ borderTop: `1px solid ${C.border}` }}>
-                                    <td style={tdStyleDriveSm}>{row.date}</td>
+                                    <td style={tdStyleDriveSm}>{fmtUSDate(row.date)}</td>
                                     <td style={tdStyleDriveSm}>{row.location}</td>
                                     <td style={tdStyleDriveSm}>{row.splice}</td>
                                     <td style={tdStyleDriveSm}>{row.name}</td>
@@ -4072,6 +4091,12 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
               </button>
               {onAddMaps && (
                 <>
+                  <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: C.textDim }}>
+                    {t('Dia de entrega')}
+                    <select value={addDay} onChange={(e) => setAddDay(e.target.value)} style={{ background: C.panel2, color: C.text, border: `1px solid ${C.border2}`, borderRadius: 5, padding: "6px 8px", fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace" }}>
+                      {addDayOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </label>
                   <button onClick={() => addMissing(selectedMissing)} disabled={!selectedMissing.length} style={{ background: "transparent", color: selectedMissing.length ? C.green : C.textFaint, border: `1px solid ${selectedMissing.length ? C.green : C.border2}`, borderRadius: 5, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, cursor: selectedMissing.length ? "pointer" : "default" }}>
                     {t('Adicionar selecionados')} ({selectedMissing.length})
                   </button>
@@ -4452,7 +4477,7 @@ function ProductionDashboard() {
   const copyStatusText = async () => {
     const topPriority = filteredAndSorted[0]?.otCount > 0 ? `${filteredAndSorted[0].map} (${filteredAndSorted[0].otCount} OTs)` : "Nenhuma";
     const lines = [
-      `📊 *STATUS DA PRODUÇÃO* — ${new Date().toLocaleDateString('pt-BR')}`,
+      `📊 *STATUS DA PRODUÇÃO* — ${new Date().toLocaleDateString('en-US')}`,
       ``,
       `✅ Taxa de Conclusão: *${kpis.rate}%*`,
       `🗺️ Mapas: ${kpis.total} total | ${kpis.ok} finalizados | ${kpis.pending} em andamento`,
@@ -4733,7 +4758,7 @@ function ProductionDashboard() {
 
   // Cria no Dashboard (Controle Geral) os mapas que o Scanner Drive achou e ainda não existem aqui.
   // Entram zerados (sem OTs, sem status), no ciclo atualmente selecionado, igual ao "Novo Mapa" do Controle Geral.
-  const addMapsFromScanner = (names) => {
+  const addMapsFromScanner = (names, day) => {
     const base = Date.now();
     const cycle = (selectedCycle && selectedCycle !== "ALL") ? selectedCycle : "SEMANA_1";
     setProjects((prev) => {
@@ -4745,7 +4770,7 @@ function ProductionDashboard() {
         existing.add(k);
         toAdd.push({
           id: `item-${base}-${i}`,
-          deliveryDay: "QUINTA",
+          deliveryDay: String(day || "QUINTA").trim().toUpperCase(),
           cycle,
           map: String(n).trim(),
           status: "NO_UPDATE",
@@ -4753,7 +4778,7 @@ function ProductionDashboard() {
           asbuiltStatus: "SEM_ATUALIZACAO_SEMANA", asbuiltDate: "", asbuiltTech: "", asbuiltHistory: [],
           invoiceStatus: "PENDENTE", invoiceDate: "", invoiceTech: "", invoiceHistory: [],
           workbookStatus: "PENDENTE", workbookDate: "", workbookTech: "", workbookHistory: [],
-          note: "Adicionado pelo Checklist do Scanner Drive"
+          note: ""
         });
       });
       return toAdd.length ? [...prev, ...toAdd] : prev;
@@ -5245,7 +5270,7 @@ function ProductionDashboard() {
     });
     return Object.entries(map)
       .map(([date, stats]) => ({ date, ...stats, pending: stats.total - stats.done }))
-      .sort((a, b) => (a.date < b.date ? 1 : -1));
+      .sort((a, b) => (normDateForCompare(a.date) < normDateForCompare(b.date) ? 1 : -1));
   }, [filteredProduction]);
 
   // Aplica o filtro Todos/Pendentes/Feitos por cima do que já estava filtrado (mapa + busca)
@@ -5262,7 +5287,7 @@ function ProductionDashboard() {
     const parts = isoDate.split("-");
     if (parts.length !== 3) return isoDate;
     const [y, m, d] = parts;
-    return `${d}/${m}`;
+    return `${m}/${d}`;
   };
   const periodProdStats = useMemo(() => {
     if (!rangeFrom || !rangeTo) return null;
@@ -5464,7 +5489,7 @@ function ProductionDashboard() {
         daily: r.fiber || "",
         pendings: r.pendings || "",
         done: false,
-        date: r.date || "",
+        date: fmtUSDate(r.date || ""),
         map: r.map || "",
         location: r.location || "",
         splice: r.splice || "",
@@ -5739,7 +5764,7 @@ function ProductionDashboard() {
       if ((dr.pendingCount || 0) === 0) return 'EM DIA';
       return `${dr.pendingCount} linha(s) pendente(s)${dr.usedDateFallback ? ' (SEM END INVOICE)' : ''}`;
     };
-    const driveModifiedLabel = (dr) => (dr && dr.modifiedTime) ? new Date(dr.modifiedTime).toLocaleString('pt-BR') : '—';
+    const driveModifiedLabel = (dr) => (dr && dr.modifiedTime) ? new Date(dr.modifiedTime).toLocaleString('en-US') : '—';
 
     const wb = new window.ExcelJS.Workbook();
     const ws = wb.addWorksheet('Controle Geral');
@@ -6260,7 +6285,7 @@ function ProductionDashboard() {
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                 {dailyProdStats.map((d) => (
                   <div key={d.date} style={{ display: "flex", alignItems: "center", gap: 8, background: C.panel2, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "6px 10px" }}>
-                    <span style={{ fontSize: 10, color: C.green, fontWeight: 800 }}>{d.date}</span>
+                    <span style={{ fontSize: 10, color: C.green, fontWeight: 800 }}>{fmtUSDate(d.date)}</span>
                     <div style={{ width: 48, height: 6, background: C.border2, borderRadius: 3, overflow: "hidden" }}>
                       <div style={{ width: `${d.total > 0 ? Math.round((d.done / d.total) * 100) : 0}%`, height: "100%", background: C.green }} />
                     </div>
@@ -6354,7 +6379,7 @@ function ProductionDashboard() {
                               )}
                             </div>
                           </td>); })}
-                        <td title={item.date} style={{ padding: "6px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", textOverflow: "ellipsis", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.date}</td>
+                        <td title={fmtUSDate(item.date)} style={{ padding: "6px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", textOverflow: "ellipsis", border: `1px solid ${C.borderSoft}`, color: C.green, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{fmtUSDate(item.date)}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, color: C.text, textDecoration: isDone ? "line-through" : "none" }}>{item.map}</td>
                         <td title={item.location} style={{ padding: "6px 4px", width: 75, minWidth: 75, maxWidth: 75, boxSizing: "border-box", overflow: "hidden", textOverflow: "ellipsis", border: `1px solid ${C.borderSoft}`, textDecoration: isDone ? "line-through" : "none" }}>{item.location}</td>
                         <td style={{ padding: "6px 8px", border: `1px solid ${C.borderSoft}`, fontWeight: 700, textDecoration: isDone ? "line-through" : "none" }}>{item.splice}</td>
@@ -6732,7 +6757,7 @@ function ProductionDashboard() {
                   {driveRefreshFlash ? <CheckCircle size={12} /> : <RotateCcw size={12} />} {driveRefreshFlash ? t('Atualizado!') : t('Atualizar Drive')}
                 </button>
                 <span style={{ fontSize: 8.5, color: C.textFaint, paddingLeft: 2 }}>
-                  {driveScanLast ? `${t('Última varredura: ')}${new Date(driveScanLast).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR')}` : t('Nenhuma varredura salva ainda — rode uma na aba Scanner Drive.')}
+                  {driveScanLast ? `${t('Última varredura: ')}${new Date(driveScanLast).toLocaleString('en-US')}` : t('Nenhuma varredura salva ainda — rode uma na aba Scanner Drive.')}
                 </span>
               </div>
               <button
@@ -6857,7 +6882,7 @@ function ProductionDashboard() {
                       )}
                     </td>
                     <td style={{ padding: "8px 6px", fontSize: 10, color: C.textDim }}>
-                      {dr && dr.modifiedTime ? new Date(dr.modifiedTime).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR') : "—"}
+                      {dr && dr.modifiedTime ? new Date(dr.modifiedTime).toLocaleString('en-US') : "—"}
                     </td>
                     <td style={{ padding: "8px 6px" }}>
                       {item.otCount > 0 ? (
@@ -6945,7 +6970,7 @@ function ProductionDashboard() {
                     <div>
                       <div style={{ fontWeight: 800, color: C.text, fontSize: 12.5 }}>{arch.label}</div>
                       <div style={{ fontSize: 9.5, color: C.textFaint, marginTop: 2 }}>
-                        Arquivado em {new Date(arch.archivedAt).toLocaleDateString('pt-BR')} · {arch.projects.length} item(ns)
+                        Arquivado em {new Date(arch.archivedAt).toLocaleDateString('en-US')} · {arch.projects.length} item(ns)
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
@@ -7138,7 +7163,7 @@ function PasteImportModal({ onClose, onImport }) {
                   const codeEntries = Object.entries(r.codes || {}).filter(([, v]) => v !== '');
                   return (
                     <tr key={i} style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
-                      <td style={{ padding: "5px 8px", color: C.text }}>{r.date}</td>
+                      <td style={{ padding: "5px 8px", color: C.text }}>{fmtUSDate(r.date)}</td>
                       <td style={{ padding: "5px 8px", color: C.text }}>{r.map}</td>
                       <td style={{ padding: "5px 8px", color: C.text }}>{r.location}</td>
                       <td style={{ padding: "5px 8px", color: C.text }}>{r.splice}</td>
@@ -7193,7 +7218,7 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
   // (ainda não existe na Produção) ou "já importada" (evita duplicar se importar de novo).
   const mapGroups = useMemo(() => {
     return driveResults
-      .filter((r) => !r.error && (r.pendingCount || 0) > 0 && r.pendingRows && r.pendingRows.length > 0)
+      .filter((r) => !r.error && r.dateFmt === 'us' && (r.pendingCount || 0) > 0 && r.pendingRows && r.pendingRows.length > 0)
       .map((r) => {
         const rows = r.pendingRows.map((row) => {
           const full = { ...row, map: row.map || r.mapName };
@@ -7267,7 +7292,7 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
 
             {lastScan && (
               <div style={{ fontSize: 10, color: C.textFaint }}>
-                {t('Última varredura do Drive:')} {new Date(lastScan).toLocaleString(lang === 'en' ? 'en-US' : 'pt-BR')}
+                {t('Última varredura do Drive:')} {new Date(lastScan).toLocaleString('en-US')}
               </div>
             )}
 
@@ -7319,7 +7344,7 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
                         <tbody>
                           {g.rows.filter((r) => !onlyNew || r.isNew).map((r, idx) => (
                             <tr key={idx} style={{ opacity: isMapChecked(g.mapName) ? 1 : 0.4 }}>
-                              <td style={{ padding: "4px 10px", color: C.textDim, width: 70 }}>{r.date}</td>
+                              <td style={{ padding: "4px 10px", color: C.textDim, width: 70 }}>{fmtUSDate(r.date)}</td>
                               <td style={{ padding: "4px 10px", color: C.text }}>{r.location}</td>
                               <td style={{ padding: "4px 10px", color: C.textDim, width: 50 }}>{r.splice}</td>
                               <td style={{ padding: "4px 10px", color: C.textDim, width: 130 }}>{r.name}</td>
