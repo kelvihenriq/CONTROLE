@@ -787,7 +787,7 @@ function toNumOrBlank(v) {
   return Number.isFinite(n) ? n : v;
 }
 
-// ===== INVOICE (.XLSX) — réplica fiel do modelo da empresa (aba "DADOS") =====
+// ===== INVOICE (.XLSX) — réplica fiel do modelo da empresa (aba "TOTAL") =====
 // Ordem fixa das colunas de código do modelo (H..X). Códigos usados no site que não estão nessa
 // lista só entram (no fim, depois do AS19) se tiverem total > 0 — assim nada some do invoice.
 const INVOICE_TEMPLATE_CODES = ['FS01', 'FS02', 'FS03', 'FS07A', 'FS16', 'FS04', 'FS08', 'US01', 'AS24', 'MC01A', 'MC09', 'FS10', 'FS14', 'FS15', 'ER01', 'ER03', 'AS19'];
@@ -824,19 +824,19 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
   const L = nMain + nCode; // total de colunas (24 no modelo)
   const firstCode = nMain + 1; // coluna H
 
-  // ----- estilos (iguais ao modelo) -----
+  // ----- estilos (iguais ao modelo novo: cinza / verde / teal) -----
   const solid = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
   const B = (style) => ({ style, color: { argb: 'FF000000' } });
   const TNR = (size, extra) => ({ name: 'Times New Roman', size, ...(extra || {}) });
   const BLACK = { argb: 'FF000000' };
   const WHITE = { argb: 'FFFFFFFF' };
-  const CLR_COMPANY = 'FFD9E2F3', CLR_BAND_B = 'FFB4C6E7', CLR_TITLE = 'FF8EAADB', CLR_NAVY = 'FF1F3864';
-  const CLR_MID = 'FF9CC2E5', CLR_HEAD = 'FF2F5496';
+  const CLR_GRAY = 'FFBDBDBD', CLR_BAR = 'FF63D297', CLR_HEAD = 'FF26A69A', CLR_BAND = 'FFDDF2F0';
+  const CLR_LABEL = 'FF6AA84F', CLR_SUMROW = 'FFA5A5A5', CLR_TOTAL = 'FF666666';
   const FMT_PRICE = '"$"\\ #,##0.00;[Red]\\-"$"\\ #,##0.00';
   const FMT_SUB = '_-[$$-409]* #,##0.00_ ;_-[$$-409]* \\-#,##0.00\\ ;_-[$$-409]* "-"??_ ;_-@_ ';
 
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('DADOS', {
+  const ws = wb.addWorksheet('TOTAL', {
     properties: { defaultRowHeight: 15, defaultColWidth: 11.22 },
     pageSetup: {
       orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
@@ -845,19 +845,19 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
   });
 
   // ----- larguras (modelo) -----
-  const widths = [8.44, 14.11, 18, 9.56, 18.89, 10.67, 11];
+  const baseWidths = [12.11, 14.11, 15.67, 12.22, 18.89, 16.22, 16.22, 10.78];
   for (let c = 1; c <= L; c++) {
-    let w;
-    if (c <= nMain) w = widths[c - 1];
-    else w = (c === 11) ? 8.67 : 6.89; // K = 8.67, o resto dos códigos = 6.89
-    ws.getColumn(c).width = w;
+    ws.getColumn(c).width = baseWidths[c - 1] || (c <= 16 ? 10 : 11.11);
   }
 
-  // ----- LINHAS 1-3: cabeçalho da empresa -----
-  ws.mergeCells(1, 1, 3, L);
+  // cabeçalho do modelo ocupa de A até P (16 colunas)
+  const HL = Math.min(16, L);
+
+  // ----- LINHAS 1-3: cabeçalho da empresa (cinza) -----
+  ws.mergeCells(1, 1, 3, HL);
   const company = ws.getCell(1, 1);
   company.value = companyText;
-  company.fill = solid(CLR_COMPANY);
+  company.fill = solid(CLR_GRAY);
   company.font = TNR(16, { bold: true });
   company.alignment = { horizontal: 'center', wrapText: true };
   [1, 2, 3].forEach((r) => { ws.getRow(r).height = 30; ws.getCell(r, 1).border = { left: B('thin') }; });
@@ -865,52 +865,49 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
   // ----- LINHAS 4-5: ocultas (como no modelo) -----
   [4, 5].forEach((r) => { ws.getRow(r).height = 15; ws.getRow(r).hidden = true; });
 
-  // ----- LINHA 6: barra navy -----
-  ws.mergeCells(6, 1, 6, L);
-  ws.getCell(6, 1).fill = solid(CLR_NAVY);
+  // ----- LINHA 6: barra verde -----
+  ws.mergeCells(6, 1, 6, HL);
+  ws.getCell(6, 1).fill = solid(CLR_BAR);
+  ws.getCell(6, 1).font = TNR(12);
   ws.getCell(6, 1).border = { left: B('thin') };
   ws.getRow(6).height = 15;
 
-  // ----- LINHA 7: título -----
-  ws.mergeCells(7, 1, 7, L);
+  // ----- LINHA 7: título (fundo branco) -----
+  ws.mergeCells(7, 1, 7, HL);
   const title = ws.getCell(7, 1);
   title.value = titleText;
-  title.fill = solid(CLR_TITLE);
+  title.fill = solid('FFFFFFFF');
   title.font = TNR(16, { bold: true });
   title.alignment = { horizontal: 'center', vertical: 'middle' };
   title.border = { left: B('thin') };
   ws.getRow(7).height = 21.75;
 
-  // ----- LINHA 8: cabeçalhos das colunas -----
+  // ----- LINHA 8: cabeçalhos das colunas (teal) — textos inalterados -----
   const headers = ['DATE', 'MAP', 'LOCATION', 'SPLICE', 'NAME', 'TYPE', 'TYPE', ...codeCols.map((c) => c.label)];
   for (let c = 1; c <= L; c++) {
     const cell = ws.getCell(8, c);
     cell.value = headers[c - 1];
-    cell.fill = solid('FFFFFFFF');
+    cell.fill = solid(CLR_HEAD);
     cell.font = TNR(12);
     cell.alignment = { horizontal: 'center', vertical: 'middle' };
     cell.border = { top: B('medium'), bottom: B('medium'), left: B('medium'), right: B('medium') };
   }
 
-  // ----- LINHAS 9+: dados, com faixas alternadas até a linha 248 (como o modelo) -----
+  // ----- LINHAS 9+: dados, faixas branco / verde-água claro até a linha 240 (como o modelo) -----
   const lastDataRow = 8 + rows.length;
-  const bandEnd = Math.max(248, lastDataRow);
-  // Como no modelo: ficam visíveis as linhas até a 50 (ou até a última linha com dado, se passar
-  // disso); as faixas em branco restantes (51..248) ficam OCULTAS e o bloco de totais aparece depois.
-  const visibleEnd = Math.max(50, lastDataRow);
-  const bandFill = (r) => solid(r % 2 === 1 ? CLR_COMPANY : CLR_BAND_B);
+  const bandEnd = Math.max(240, lastDataRow);
   for (let r = 9; r <= bandEnd; r++) {
     const row = ws.getRow(r);
     row.height = 15.75;
-    if (r > visibleEnd) row.hidden = true;
+    const fill = solid(r % 2 === 1 ? 'FFFFFFFF' : CLR_BAND);
     for (let c = 1; c <= L; c++) {
       const cell = row.getCell(c);
-      cell.fill = bandFill(r);
+      cell.fill = fill;
       const calibri = (c === 1 || c === 3);
       cell.font = calibri ? { name: 'Calibri', size: 11, color: BLACK } : TNR(10);
       cell.alignment = calibri ? { horizontal: 'center' } : { horizontal: 'center', vertical: 'middle' };
       cell.border = { top: B('thin'), bottom: B('thin'), left: B('thin'), right: B('thin') };
-      if (c === 2 || c === 3) cell.numFmt = '@';
+      if (c === 3) cell.numFmt = '@';
     }
   }
   rows.forEach((item, idx) => {
@@ -920,7 +917,7 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
     if (iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
       // meio-dia UTC evita a data "escorregar" um dia por fuso horário
       dateCell.value = new Date(`${iso}T12:00:00Z`);
-      dateCell.numFmt = 'mm/dd/yy'; // mesmo texto que aparece no site (ex: 10/06/26)
+      dateCell.numFmt = 'mm/dd/yy'; // padrão americano (ex: 11/04/26)
     } else {
       dateCell.value = fmtUSDate(item.date) || '';
     }
@@ -938,29 +935,27 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
     });
   });
 
-  // ===== BLOCO TOTAL / PRICE (começa 4 linhas depois do fim das faixas: linha 252 no modelo) =====
-  const tr = bandEnd + 4;           // linha dos rótulos
-  const sumRow = tr + 1;            // linha dos totais
-  const priceRow = tr + 2;          // linha dos preços
-  const sumTo = bandEnd + 1;        // o modelo soma até uma linha depois das faixas (H9:H249)
+  // ===== BLOCO TOTAL / PRICE (3 linhas depois do fim das faixas: linha 243 no modelo) =====
+  const tr = bandEnd + 3;           // linha dos rótulos (verde)
+  const sumRow = tr + 1;            // linha TOTAL
+  const priceRow = tr + 2;          // linha PRICE
+  const sumTo = bandEnd;            // o modelo soma até o fim das faixas (H9:H240)
   ws.getRow(tr).height = 15.75;
   ws.getRow(sumRow).height = 16.5;
   ws.getRow(priceRow).height = 16.5;
   ws.getRow(tr + 3).height = 15;
 
-  ws.mergeCells(tr, 7, sumRow, 7);
-  const gTotal = ws.getCell(tr, 7);
+  const gTotal = ws.getCell(sumRow, 7);
   gTotal.value = 'TOTAL';
-  gTotal.fill = solid(CLR_MID);
+  gTotal.fill = solid(CLR_SUMROW);
   gTotal.font = TNR(12);
-  gTotal.alignment = { horizontal: 'center', vertical: 'middle' };
-  gTotal.border = { left: B('thick'), top: B('thick') };
-  ws.getCell(sumRow, 7).border = { left: B('thick'), bottom: B('thick') };
+  gTotal.alignment = { vertical: 'middle' };
+  gTotal.border = { left: B('thick'), top: B('thick'), bottom: B('thick') };
 
   const gPrice = ws.getCell(priceRow, 7);
   gPrice.value = 'PRICE';
   gPrice.font = TNR(12);
-  gPrice.alignment = { horizontal: 'center', vertical: 'middle' };
+  gPrice.alignment = { vertical: 'middle' };
   gPrice.border = { left: B('thick'), top: B('thick'), bottom: B('thick') };
 
   codeCols.forEach((cc, i) => {
@@ -970,7 +965,7 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
 
     const lab = ws.getCell(tr, c);
     lab.value = { formula: `${cl}8`, result: cc.label };
-    lab.fill = solid(CLR_HEAD);
+    lab.fill = solid(CLR_LABEL);
     lab.font = TNR(10, { color: WHITE });
     lab.alignment = { horizontal: 'center', vertical: 'middle' };
     lab.numFmt = '0.00';
@@ -978,7 +973,7 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
 
     const sum = ws.getCell(sumRow, c);
     sum.value = { formula: `SUM(${cl}9:${cl}${sumTo})`, result: cc.total };
-    sum.fill = solid(CLR_MID);
+    sum.fill = solid(CLR_SUMROW);
     sum.font = TNR(10);
     sum.alignment = { horizontal: 'center', vertical: 'middle' };
     sum.numFmt = '0.00';
@@ -992,51 +987,60 @@ function buildInvoiceWorkbook(ExcelJS, ctx) {
     pr.border = { top: B('thick'), bottom: B('medium'), left: first ? B('medium') : B('thick'), right: last ? B('medium') : B('thin') };
   });
 
-  // ----- TABELA VERTICAL (código / valor) nas 4 últimas colunas, abaixo do bloco (linha 256 no modelo) -----
-  const sr = tr + 4;
-  const cLab = L - 3, cVal = L - 1; // U:V e W:X
+  // ----- TABELA VERTICAL (código / valor) nas colunas M:N e O:P, abaixo do bloco (linha 247 no modelo) -----
+  const sr = priceRow + 2;
+  const cLab = 13, cVal = 15; // M:N e O:P
   let grand = 0;
-  codeCols.forEach((cc, i) => {
-    const r = sr + i;
-    const cl = colLetter(firstCode + i);
+  const grayBox = (r) => {
     ws.getRow(r).height = 24;
     ws.mergeCells(r, cLab, r, cLab + 1);
     ws.mergeCells(r, cVal, r, cVal + 1);
     const a = ws.getCell(r, cLab);
-    a.value = { formula: `${cl}8`, result: cc.label };
-    a.fill = solid(CLR_MID);
+    a.fill = solid(CLR_GRAY);
     a.font = TNR(12);
     a.alignment = { horizontal: 'center', vertical: 'middle' };
-    const brd = { top: B('medium'), bottom: B('medium'), left: B('medium') };
-    a.border = brd;
+    a.border = { top: B('medium'), bottom: B('medium'), left: B('medium') };
     ws.getCell(r, cLab + 1).border = { top: B('medium'), bottom: B('medium') };
-    const sub = cc.total * cc.price;
-    grand += sub;
     const v = ws.getCell(r, cVal);
-    v.value = { formula: `${cl}${sumRow}*${cl}${priceRow}`, result: sub };
-    v.fill = solid(CLR_MID);
+    v.fill = solid(CLR_GRAY);
     v.font = TNR(12);
     v.alignment = { horizontal: 'center', vertical: 'middle' };
     v.numFmt = FMT_SUB;
     v.border = { top: B('medium'), bottom: B('medium'), left: B('medium'), right: B('medium') };
     ws.getCell(r, cVal + 1).border = { top: B('medium'), bottom: B('medium'), right: B('medium') };
+    return { a, v };
+  };
+  codeCols.forEach((cc, i) => {
+    const r = sr + i;
+    const cl = colLetter(firstCode + i);
+    const { a, v } = grayBox(r);
+    a.value = { formula: `${cl}8`, result: cc.label };
+    const sub = cc.total * cc.price;
+    grand += sub;
+    v.value = { formula: `${cl}${sumRow}*${cl}${priceRow}`, result: sub };
   });
 
-  const gr = sr + nCode;
+  // RESERVE (campo livre, fora da soma — igual ao modelo)
+  const rr = sr + nCode;
+  const reserve = grayBox(rr);
+  reserve.a.value = 'RESERVE';
+
+  // TOTAL geral
+  const gr = rr + 1;
   ws.getRow(gr).height = 36;
   ws.getRow(gr + 1).height = 15;
   ws.mergeCells(gr, cLab, gr, cLab + 1);
   ws.mergeCells(gr, cVal, gr, cVal + 1);
   const tl = ws.getCell(gr, cLab);
   tl.value = 'TOTAL';
-  tl.fill = solid(CLR_NAVY);
+  tl.fill = solid(CLR_TOTAL);
   tl.font = TNR(16, { color: WHITE });
   tl.alignment = { horizontal: 'center', vertical: 'middle' };
   tl.border = { top: B('medium'), bottom: B('medium'), left: B('medium') };
   ws.getCell(gr, cLab + 1).border = { top: B('medium'), bottom: B('medium') };
   const tv = ws.getCell(gr, cVal);
-  tv.value = { formula: `SUM(${colLetter(cVal)}${sr}:${colLetter(cVal + 1)}${gr - 1})`, result: grand };
-  tv.fill = solid(CLR_NAVY);
+  tv.value = { formula: `SUM(${colLetter(cVal)}${sr}:${colLetter(cVal + 1)}${rr - 1})`, result: grand };
+  tv.fill = solid(CLR_TOTAL);
   tv.font = TNR(16, { color: WHITE });
   tv.alignment = { horizontal: 'center', vertical: 'middle' };
   tv.numFmt = FMT_SUB;
@@ -5676,8 +5680,8 @@ function ProductionDashboard() {
     URL.revokeObjectURL(url);
   };
 
-  // ===== EXPORTAR INVOICE (.XLSX) — mesmo layout/cores do modelo da empresa (aba "DADOS") =====
-  // O desenho da planilha (cabeçalho, faixas azuis, bloco TOTAL/PRICE e tabela de valores) está em
+  // ===== EXPORTAR INVOICE (.XLSX) — mesmo layout/cores do modelo da empresa (aba "TOTAL") =====
+  // O desenho da planilha (cabeçalho, faixas verde-água, bloco TOTAL/PRICE e tabela de valores) está em
   // buildInvoiceWorkbook(), no topo do arquivo. Aqui só montamos título, nome do arquivo e baixamos.
   const exportInvoiceXLSX = async () => {
     if (!window.ExcelJS) {
