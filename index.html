@@ -2740,6 +2740,17 @@ function normalizeSheetDatesToUS(XLSXlib, ws) {
     let isDate = false;
     try { isDate = XLSXlib.SSF.is_date(c.z); } catch (e) { isDate = false; }
     if (!isDate) return;
+    // 1) Regra da equipe: vale o que está ESCRITO na célula (ex: 11/10/26 = mês 11, dia 10), mesmo que o
+    //    formato da planilha seja dd/mm. Então lemos o texto como a célula mostra e só padronizamos
+    //    separador e ano de 2 dígitos — sem trocar dia e mês.
+    let shown = '';
+    try { shown = String(XLSXlib.SSF.format(c.z, c.v) || '').trim(); } catch (e) { shown = ''; }
+    const sm = shown.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+    if (sm) {
+      c.w = sm[1].padStart(2, '0') + '/' + sm[2].padStart(2, '0') + '/' + (sm[3].length === 4 ? sm[3].slice(2) : sm[3]);
+      return;
+    }
+    // 2) Formato com nome de mês etc. (ex: 10-Nov-26): usa o valor real da data, em mm/dd/aa.
     const p = XLSXlib.SSF.parse_date_code(c.v);
     if (!p || !p.y || !p.m || !p.d) return;
     c.w = String(p.m).padStart(2, '0') + '/' + String(p.d).padStart(2, '0') + '/' + String(p.y % 100).padStart(2, '0');
@@ -3691,7 +3702,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
             skippedByDate: mapSkippedByDate,
             skippedSample: mapSkippedSample,
             sheetName: mainSheetName || '',
-            dateFmt: 'us', // datas desta varredura já estão em MM/DD/YY
+            dateFmt: 'us2', // datas desta varredura seguem o texto da célula (MM/DD/YY)
             sheetCount: wb.SheetNames.length,
             error: null,
           });
@@ -7222,7 +7233,7 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
   // (ainda não existe na Produção) ou "já importada" (evita duplicar se importar de novo).
   const mapGroups = useMemo(() => {
     return driveResults
-      .filter((r) => !r.error && r.dateFmt === 'us' && (r.pendingCount || 0) > 0 && r.pendingRows && r.pendingRows.length > 0)
+      .filter((r) => !r.error && r.dateFmt === 'us2' && (r.pendingCount || 0) > 0 && r.pendingRows && r.pendingRows.length > 0)
       .map((r) => {
         const rows = r.pendingRows.map((row) => {
           const full = { ...row, map: row.map || r.mapName };
