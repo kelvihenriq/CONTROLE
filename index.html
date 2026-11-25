@@ -2763,6 +2763,22 @@ function normalizeSheetDatesToUS(XLSXlib, ws) {
 // fallbackEndDate ('YYYY-MM-DD' ou null): opcional — limita esse mesmo fallback até essa data
 // (<=), pra puxar só uma janela específica (ex: 25/08 até 28/08) em vez de "desde X pra sempre".
 // Quando a aba TEM "END INVOICE", nenhuma dessas datas entra em jogo — o marcador sempre manda.
+// Reconhece o cabeçalho de uma coluna de código mesmo escrito diferente do ID do sistema:
+// ignora maiúsculas/minúsculas, espaços, hífens e outros símbolos.
+// Ex: "HO1 - Splice" = HO1-SPLICE, "1X4 - tapmid" = 1X4-TAPMID, "1X4 DUAL - Tapmid" = 1X4DUAL-TAPMID.
+// Inclui os códigos cadastrados pela equipe (ex: HO1-SPLICE, 1X4-TAPMID), mantidos em EXTRA_CODE_FIELDS.
+let EXTRA_CODE_FIELDS = [];
+function matchCodeHeader(text) {
+  const raw = String(text == null ? '' : text).trim().toUpperCase();
+  if (!raw) return null;
+  const all = [...CODE_FIELDS, ...EXTRA_CODE_FIELDS];
+  const exact = all.find((f) => String(f.id).toUpperCase() === raw);
+  if (exact) return exact;
+  const sq = raw.replace(/[^A-Z0-9]/g, '');
+  if (!sq) return null;
+  return all.find((f) => String(f.id).toUpperCase().replace(/[^A-Z0-9]/g, '') === sq) || null;
+}
+
 function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
   let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType1 = -1, colType2 = -1, colFiber = -1, colPendings = -1;
   let codeColumnMap = {}; // { índiceDaColuna: idDoCódigo } — ex: coluna "FS01" -> 'FS01'
@@ -2786,7 +2802,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       // qualquer cabeçalho cujo texto bata exatamente com um ID de código do sistema é reconhecido
       // e a quantidade daquela linha é lida direto — assim o gerador automático já sai pronto.
       norm.forEach((cellText, idx) => {
-        const match = CODE_FIELDS.find((f) => f.id.toUpperCase() === cellText);
+        const match = matchCodeHeader(cellText);
         if (match) codeColumnMap[idx] = match.id;
       });
       // Além dos códigos padrão, alguns mapas ganham uma coluna extra pra um código novo que
@@ -5085,6 +5101,7 @@ function ProductionDashboard() {
   useCloudSync('custom_code_fields', [customCodeFields], () => customCodeFields, (v) => setCustomCodeFields(Array.isArray(v) ? v : []));
 
   const allCodeFields = useMemo(() => [...CODE_FIELDS, ...customCodeFields], [customCodeFields]);
+  EXTRA_CODE_FIELDS = customCodeFields; // o leitor de planilhas enxerga os códigos cadastrados
 
   // Cadastra um novo código (ex: "AS19"). Normaliza (maiúsculo, sem espaço) e recusa duplicado
   // (tanto dos 11 padrão quanto dos já customizados). Devolve true/false pra quem chamou avisar.
@@ -7088,13 +7105,13 @@ function parsePastedProductionRows(text) {
   let startIdx = 0;
   const firstCells = splitPastedCells(lines[0]);
   const isHeaderRow = /^date$/i.test(firstCells[0] || '') ||
-    firstCells.slice(7).some((c) => CODE_FIELDS.some((f) => f.id.toUpperCase() === (c || '').toUpperCase()));
+    firstCells.slice(7).some((c) => !!matchCodeHeader(c));
 
   if (isHeaderRow) {
     codeColumnMap = {};
     firstCells.forEach((cellText, idx) => {
       if (idx < 7) return;
-      const match = CODE_FIELDS.find((f) => f.id.toUpperCase() === (cellText || '').toUpperCase());
+      const match = matchCodeHeader(cellText);
       if (match) codeColumnMap[idx] = match.id;
     });
     startIdx = 1;
