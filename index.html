@@ -2801,7 +2801,13 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       // Colunas de código (AS24, FS01, FS02, FS03, FS14, FS07A, FS08, FS16, FS04, MC01A, US01):
       // qualquer cabeçalho cujo texto bata exatamente com um ID de código do sistema é reconhecido
       // e a quantidade daquela linha é lida direto — assim o gerador automático já sai pronto.
+      // As colunas fixas (DATE, MAP, LOCATION, SPLICE, NAME, TYPE...) NUNCA são códigos — ex: a coluna
+      // "SPLICE" (quantidade de emendas) não pode virar o código cadastrado "SPLICE". Só vale
+      // o que está à direita dessas colunas fixas.
+      const knownIdx = new Set([colLocation, colDate, colMap, colSplice, colName, colType1, colType2, colFiber, colPendings].filter((x) => x !== -1));
+      const maxKnownIdx = Math.max(-1, ...knownIdx);
       norm.forEach((cellText, idx) => {
+        if (knownIdx.has(idx) || idx <= maxKnownIdx) return;
         const match = matchCodeHeader(cellText);
         if (match) codeColumnMap[idx] = match.id;
       });
@@ -2812,8 +2818,6 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       // (letras seguidas de números, ex: FS10, AS19) também é reconhecida automaticamente —
       // mesmo sem já existir no sistema. Colunas tipo "CABLE" ou "CASE/FE" (sem números) ficam
       // de fora, pra não confundir com anotações que não são um código de as-built.
-      const knownIdx = new Set([colLocation, colDate, colMap, colSplice, colName, colType1, colType2, colFiber, colPendings].filter((x) => x !== -1));
-      const maxKnownIdx = Math.max(-1, ...knownIdx);
       // Cabeçalhos que claramente NÃO são um código de as-built, mesmo batendo no formato
       // "letras curtas" abaixo (ex: anotações ou textos livres de algumas planilhas).
       const NON_CODE_HEADER_WORDS = new Set(['CABLE', 'NOTES', 'NOTE', 'COMMENTS', 'COMMENT', 'PHOTOS', 'PHOTO', 'STATUS', 'OBS']);
