@@ -5447,6 +5447,17 @@ function ProductionDashboard() {
     setSelectedMapProd("ALL");
   };
 
+  // Apaga TODAS as produções de TODOS os mapas (dupla confirmação: precisa digitar APAGAR).
+  const handleDeleteAllProd = () => {
+    const count = productionList.length;
+    if (count === 0) { alert('Não há nenhuma produção para apagar.'); return; }
+    if (!window.confirm(`Apagar TODAS as ${count} produções de TODOS os mapas?\n\nDica: antes, use "Exportar Tudo (.XLSX Colorido)" para guardar um backup.\n\nEssa ação não pode ser desfeita.`)) return;
+    const typed = window.prompt('Para confirmar, digite APAGAR (em maiúsculas):');
+    if ((typed || '').trim() !== 'APAGAR') { alert('Cancelado: nada foi apagado.'); return; }
+    setProductionList([]);
+    setSelectedMapProd("ALL");
+  };
+
   // Recebe as linhas já coladas do Excel/Sheets (DATE, MAP, LOCATION, SPLICE, NAME, TYPE, TYPE)
   // e cria um registro de produção pra cada uma, com os códigos em branco pra preencher depois.
   const handleImportPastedRows = (rows) => {
@@ -6202,6 +6213,9 @@ function ProductionDashboard() {
                 style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: "#a2e048", border: "1px dashed #a2e048", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
               >
                 <Plus size={14} /> {t('Novo Código')}
+              </button>
+              <button onClick={handleDeleteAllProd} title="Apaga TODAS as produções de TODOS os mapas (pede confirmação dupla)" style={{ display: "flex", alignItems: "center", gap: 6, background: C.red, color: "#000", border: "none", borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 800, cursor: "pointer" }}>
+                <Trash2 size={13} /> {t('Apagar Todas as Produções')}
               </button>
               {selectedMapProd !== "ALL" && (
                 <button onClick={handleDeleteCurrentMapProd} title={`Apaga todos os registros do mapa ${selectedMapProd}`} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", color: C.red, border: `1px solid ${C.red}`, borderRadius: 5, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
