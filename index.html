@@ -2782,6 +2782,7 @@ function matchCodeHeader(text) {
 function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
   let headerIdx = -1, colLocation = -1, colDate = -1, colMap = -1, colSplice = -1, colName = -1, colType1 = -1, colType2 = -1, colFiber = -1, colPendings = -1;
   let codeColumnMap = {}; // { índiceDaColuna: idDoCódigo } — ex: coluna "FS01" -> 'FS01'
+  let ignoredHeaders = []; // colunas à direita das fixas que NÃO viraram código (pra avisar na tela)
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i] || [];
@@ -2830,8 +2831,11 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
         // qualquer cabeçalho curto (até 8 caracteres), só com letras/números, sem espaço nem
         // barra — isso já separa um código ("SPYJU", "FS10") de uma anotação de texto livre
         // ("CASE / FE", "OTE RING", que têm espaço ou barra e continuam de fora).
-        if (/^[A-Z0-9]{1,8}$/.test(cellText) && /[A-Z]/.test(cellText)) {
-          codeColumnMap[idx] = cellText.replace(/[^A-Z0-9]/g, '');
+        // Aceita também 1 hífen no meio (ex: "UC04-4", "UC04A-4"), mantendo o hífen no código.
+        if (/^[A-Z0-9]{1,8}(-[A-Z0-9]{1,4})?$/.test(cellText) && /[A-Z]/.test(cellText)) {
+          codeColumnMap[idx] = cellText.replace(/[^A-Z0-9-]/g, '');
+        } else {
+          ignoredHeaders.push({ idx, header: cellText });
         }
       });
       break;
@@ -2840,6 +2844,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
   if (headerIdx === -1 || colLocation === -1) return { pending: [], total: 0, usedDateFallback: false, lastDate: 0, skippedByDate: 0, skippedSample: [] };
 
   const dataRows = [];
+  const usedRows = []; // linhas cruas que entraram como dado (pra checar colunas ignoradas)
   let lastInvoiceRelIdx = -1;
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
@@ -2861,6 +2866,7 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
       continue; // a própria linha do marcador não entra como pendência
     }
 
+    usedRows.push(row);
     dataRows.push({
       fiber: colFiber !== -1 ? (row[colFiber] == null ? '' : String(row[colFiber]).trim()) : '',
       pendings: colPendings !== -1 ? (row[colPendings] == null ? '' : String(row[colPendings]).trim()) : '',
@@ -2903,7 +2909,18 @@ function parseProductionSheetRows(rows, fallbackStartDate, fallbackEndDate) {
     pending = dataRows.slice(lastInvoiceRelIdx).filter((r) => r.location);
   }
 
-  return { pending, total: dataRows.length, usedDateFallback, lastDate, skippedByDate: skippedRows.length, skippedSample: skippedRows.slice(0, 3).map((r) => r.date || '(sem data)') };
+  // Colunas que a planilha tem, com número preenchido, mas que o sistema NÃO reconheceu como código:
+  // esses valores não entram na importação — avisamos na tela pra ninguém perder produção em silêncio.
+  const ignoredCols = ignoredHeaders.map((h) => {
+    let count = 0, sum = 0;
+    usedRows.forEach((r) => {
+      const n = parseFloat(String(r[h.idx] == null ? '' : r[h.idx]).replace(',', '.'));
+      if (!isNaN(n) && n !== 0) { count++; sum += n; }
+    });
+    return { header: h.header, count, sum };
+  }).filter((x) => x.count > 0);
+
+  return { pending, total: dataRows.length, usedDateFallback, lastDate, skippedByDate: skippedRows.length, skippedSample: skippedRows.slice(0, 3).map((r) => r.date || '(sem data)'), ignoredCols };
 }
 
 // Normaliza um nome de mapa/código pra comparação: maiúsculo, só letras e números.
@@ -3672,6 +3689,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
           let mapUsedDateFallback = false;
           let mapSkippedByDate = 0;
           let mapSkippedSample = [];
+          let mapIgnoredCols = [];
           // Só a aba principal de produção conta — evita somar rascunhos, cópias
           // e abas de invoices antigos que também moram dentro do mesmo arquivo.
           const isDraftSheetName = (name) => /rascunho|c[oó]pia|draft|invoice\s*\d|hist[oó]rico|antig/i.test(name);
@@ -3698,6 +3716,7 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
             mapUsedDateFallback = parsed.usedDateFallback;
             mapSkippedByDate = parsed.skippedByDate || 0;
             mapSkippedSample = parsed.skippedSample || [];
+            mapIgnoredCols = parsed.ignoredCols || [];
           }
 
           // Nome do mapa "limpo": tira extensão (.xlsx), "PRODUCTION LIST" e "PRODUCTION OLD",
@@ -3721,8 +3740,9 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
             usedDateFallback: mapUsedDateFallback,
             skippedByDate: mapSkippedByDate,
             skippedSample: mapSkippedSample,
+            ignoredCols: mapIgnoredCols,
             sheetName: mainSheetName || '',
-            dateFmt: 'us2', // datas desta varredura seguem o texto da célula (MM/DD/YY)
+            dateFmt: 'us3', // datas desta varredura seguem o texto da célula (MM/DD/YY)
             sheetCount: wb.SheetNames.length,
             error: null,
           });
@@ -4050,6 +4070,11 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
                         {!r.error && r.pendingCount === 0 && (r.skippedByDate || 0) > 0 && (
                           <div title={t('Esta planilha não tem END INVOICE/INVOICED e essas linhas têm LOCATION preenchido, mas a data delas está fora do ciclo de faturamento configurado (ou vazia/inválida). Confira se a data está certa.')} style={{ fontSize: 9, fontWeight: 700, color: C.amber, marginTop: 3 }}>
                             ⚠ {r.skippedByDate} {t('linha(s) fora do ciclo')} ({(r.skippedSample || []).join(', ')})
+                          </div>
+                        )}
+                        {!r.error && (r.ignoredCols || []).length > 0 && (
+                          <div style={{ fontSize: 9.5, color: C.yellow || "#facc15", fontWeight: 600, marginTop: 3 }}>
+                            ⚠ {t('Colunas com valores NÃO reconhecidas (não serão importadas)')}: {(r.ignoredCols || []).map((x) => `${x.header} (${x.sum})`).join(', ')}
                           </div>
                         )}
                         {r.usedDateFallback && r.pendingCount > 0 && (
@@ -7268,14 +7293,14 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
   // (ainda não existe na Produção) ou "já importada" (evita duplicar se importar de novo).
   const mapGroups = useMemo(() => {
     return driveResults
-      .filter((r) => !r.error && r.dateFmt === 'us2' && (r.pendingCount || 0) > 0 && r.pendingRows && r.pendingRows.length > 0)
+      .filter((r) => !r.error && r.dateFmt === 'us3' && (r.pendingCount || 0) > 0 && r.pendingRows && r.pendingRows.length > 0)
       .map((r) => {
         const rows = r.pendingRows.map((row) => {
           const full = { ...row, map: row.map || r.mapName };
           const isNew = !existingSignatures.has(prodRowSignature(full));
           return { ...full, isNew, sourceFile: r.fileName, webViewLink: r.webViewLink };
         });
-        return { mapName: r.mapName, fileName: r.fileName, webViewLink: r.webViewLink, rows, newCount: rows.filter((x) => x.isNew).length };
+        return { mapName: r.mapName, fileName: r.fileName, webViewLink: r.webViewLink, rows, newCount: rows.filter((x) => x.isNew).length, ignoredCols: r.ignoredCols || [] };
       })
       .filter((g) => g.rows.length > 0)
       .sort((a, b) => b.newCount - a.newCount);
@@ -7390,6 +7415,11 @@ function DriveImportModal({ onClose, onImport, existingSignatures, prodRowSignat
                           <a href={g.webViewLink} target="_blank" rel="noreferrer" style={{ marginLeft: "auto", fontSize: 9.5, color: C.textFaint }}>{g.fileName}</a>
                         )}
                       </div>
+                      {(g.ignoredCols || []).length > 0 && (
+                        <div style={{ padding: "3px 14px 6px", fontSize: 9.5, color: "#facc15", fontWeight: 600 }}>
+                          ⚠ {t('Colunas NÃO reconhecidas (valores não serão importados)')}: {g.ignoredCols.map((x) => `${x.header} (${x.sum})`).join(', ')} — {t('cadastre em "Novo Código" com o mesmo nome e escaneie de novo')}
+                        </div>
+                      )}
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
                         <tbody>
                           {g.rows.filter((r) => !onlyNew || r.isNew).map((r, idx) => (
