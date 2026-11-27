@@ -3386,7 +3386,7 @@ function WhatsAppTab({ productionList }) {
   );
 }
 
-function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
+function DriveScanTab({ dashboardProjects = [], onAddMaps = null, onAddCodes = null }) {
   const { t, lang } = useLang();
   const [config, setConfig] = useState(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY_DRIVE_SCAN_CONFIG) || 'null') || { clientId: '', cycleStartDate: '', cycleEndDate: '', sharedDriveId: '', folderIdFilter: '' }; }
@@ -4075,6 +4075,17 @@ function DriveScanTab({ dashboardProjects = [], onAddMaps = null }) {
                         {!r.error && (r.ignoredCols || []).length > 0 && (
                           <div style={{ fontSize: 9.5, color: C.yellow || "#facc15", fontWeight: 600, marginTop: 3 }}>
                             ⚠ {t('Colunas com valores NÃO reconhecidas (não serão importadas)')}: {(r.ignoredCols || []).map((x) => `${x.header} (${x.sum})`).join(', ')}
+                            {onAddCodes && (
+                              <button
+                                onClick={() => {
+                                  const res = onAddCodes((r.ignoredCols || []).map((x) => x.header));
+                                  alert(`${res.added.length > 0 ? 'Códigos cadastrados: ' + res.added.join(', ') + '.\n' : ''}${res.already.length > 0 ? 'Já existiam: ' + res.already.join(', ') + '.\n' : ''}\nAgora clique em "Escanear Agora" de novo para ler esses valores.`);
+                                }}
+                                style={{ marginLeft: 8, background: "transparent", color: "#facc15", border: "1px dashed #facc15", borderRadius: 4, padding: "2px 8px", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}
+                              >
+                                + {t('Cadastrar estes códigos')}
+                              </button>
+                            )}
                           </div>
                         )}
                         {r.usedDateFallback && r.pendingCount > 0 && (
@@ -5134,6 +5145,16 @@ function ProductionDashboard() {
 
   // Cadastra um novo código (ex: "AS19"). Normaliza (maiúsculo, sem espaço) e recusa duplicado
   // (tanto dos 11 padrão quanto dos já customizados). Devolve true/false pra quem chamou avisar.
+  // Cadastra, de uma vez, os códigos que o Scanner Drive achou na planilha mas o sistema não conhecia.
+  // O id segue a mesma regra do "Novo Código": maiúsculo e sem espaços (ex: "1X4 - TAPMID" -> "1X4-TAPMID").
+  const addCodesFromScanner = (headers) => {
+    const ids = Array.from(new Set((headers || []).map((h) => String(h || '').trim().toUpperCase().replace(/\s+/g, '')).filter(Boolean)));
+    const existing = new Set([...CODE_FIELDS.map((f) => f.id), ...customCodeFields.map((f) => f.id)]);
+    const toAdd = ids.filter((id) => !existing.has(id));
+    if (toAdd.length > 0) setCustomCodeFields((prev) => [...prev, ...toAdd.filter((id) => !prev.some((f) => f.id === id)).map((id) => ({ id, label: id }))]);
+    return { added: toAdd, already: ids.filter((id) => existing.has(id)) };
+  };
+
   const addCustomCodeField = (rawId) => {
     const id = (rawId || '').trim().toUpperCase().replace(/\s+/g, '');
     if (!id) return false;
@@ -6271,7 +6292,7 @@ function ProductionDashboard() {
 
       {activeTab === "PENDINGS" && <PendingsTab pendingsByMap={pendingsByMap} setPendingsByMap={setPendingsByMap} suggestedMaps={availableMaps} />}
       {activeTab === "REDLINES" && <RedlinesTab redlinesData={redlinesData} setRedlinesData={setRedlinesData} />}
-      {activeTab === "DRIVE_SCAN" && <DriveScanTab dashboardProjects={projects} onAddMaps={addMapsFromScanner} />}
+      {activeTab === "DRIVE_SCAN" && <DriveScanTab dashboardProjects={projects} onAddMaps={addMapsFromScanner} onAddCodes={addCodesFromScanner} />}
       {activeTab === "WHATSAPP" && <WhatsAppTab productionList={productionList} />}
 
       {activeTab === "PRODUCTION_LIST" && (
